@@ -1,7 +1,8 @@
 name: Build Android APK
 
-# Builds an installable debug APK on every push to main, on manual trigger,
-# and attaches the APK to a GitHub Release whenever you push a version tag (e.g. v1.0.0).
+# Self-contained build. The repo only needs this file plus nocturne-src.zip
+# (the app files). This workflow extracts the zip, generates the native Android
+# project, injects the microphone permission, and builds an installable APK.
 on:
   push:
     branches: [ main, master ]
@@ -9,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed to create Releases on tag pushes
+  contents: write
 
 jobs:
   build:
@@ -18,6 +19,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Extract the app files from nocturne-src.zip into a clean build folder.
+      # The zip holds package.json, capacitor.config.json, and www/ at its top level.
+      - name: Extract app source
+        run: |
+          set -e
+          mkdir -p build
+          if [ -f package.json ]; then
+            echo "Loose files found at repo root; copying into build/"
+            cp -a ./. build/ 2>/dev/null || true
+          else
+            ZIP=$(ls *.zip 2>/dev/null | head -n1 || true)
+            if [ -z "$ZIP" ]; then
+              echo "::error::No package.json and no .zip found in the repo. Upload nocturne-src.zip."
+              exit 1
+            fi
+            echo "Extracting $ZIP"
+            unzip -o "$ZIP" -d build > /dev/null
+            # If the zip wrapped everything in one folder, unwrap it.
+            if [ ! -f build/package.json ]; then
+              INNER=$(dirname "$(find build -name package.json | head -n1)")
+              if [ -n "$INNER" ] && [ "$INNER" != "build" ]; then
+                cp -a "$INNER"/. build/
+              fi
+            fi
+          fi
+          echo "----- build/ contents -----"
+          ls -la build
+          test -f build/package.json || { echo "::error::package.json not found after extraction"; exit 1; }
+          test -f build/www/index.html || { echo "::error::www/index.html not found after extraction"; exit 1; }
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -34,42 +65,60 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
+        working-directory: build
         run: npm install
 
-      # Generate the native android/ project on the runner if it isn't committed.
-      # This keeps the repo lightweight and fully mobile-manageable.
       - name: Add Android platform
+        working-directory: build
         run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
+          npx cap add android
           npx cap sync android
 
-      # Inject the microphone permission and cleartext setting into the generated manifest.
       - name: Patch AndroidManifest for microphone
+        working-directory: build
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           if ! grep -q "android.permission.RECORD_AUDIO" "$MANIFEST"; then
             sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-feature android:name="android.hardware.microphone" android:required="false" />\n\n    <application#' "$MANIFEST"
           fi
-          echo "----- Manifest after patch -----"
+          echo "----- Manifest -----"
           cat "$MANIFEST"
 
       - name: Make gradlew executable
+        working-directory: build
         run: chmod +x android/gradlew
 
       - name: Build debug APK
+        working-directory: build
         run: |
           cd android
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Rename APK
+      - name: Collect outputs
+        working-directory: build
         run: |
-          mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/nocturne-debug.apk
-          ls -la dist
+          mkdir -p ../dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk ../dist/nocturne-debug.apk
+          # Bundle APK + source + install notes into one zip.
+          PKG="../dist/nocturne-bundle"
+          rm -rf "$PKG" && mkdir -p "$PKG"
+          cp ../dist/nocturne-debug.apk "$PKG/"
+          cp -r www "$PKG/www"
+          cp README.md "$PKG/" 2>/dev/null || true
+          cat > "$PKG/INSTALL.txt" <<'TXT'
+          Nocturne — install instructions
+          1. Copy nocturne-debug.apk to your Android phone (or download it there).
+          2. Open the file; allow "Install unknown apps" when prompted.
+          3. Launch Nocturne, tap Record, grant the microphone permission.
+             The "sample night" button works without the microphone.
+          Debug build for personal use. Screening aid, not a medical device.
+          TXT
+          ZIP="nocturne-bundle.zip"
+          case "$GITHUB_REF" in refs/tags/*) ZIP="nocturne-${GITHUB_REF_NAME}.zip" ;; esac
+          (cd "$PKG" && zip -r "../$ZIP" . > /dev/null)
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          ls -la ../dist
 
-      # Download this from the run's "Artifacts" section on your phone's browser.
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -77,53 +126,18 @@ jobs:
           path: dist/nocturne-debug.apk
           if-no-files-found: error
 
-      # Bundle the built APK, the web source, and install notes into one zip.
-      - name: Package release zip
-        run: |
-          PKG="nocturne-bundle"
-          rm -rf "$PKG" && mkdir -p "$PKG"
-          cp dist/nocturne-debug.apk "$PKG/"
-          cp -r www "$PKG/www"
-          cp README.md "$PKG/" 2>/dev/null || true
-          cat > "$PKG/INSTALL.txt" <<'TXT'
-          Nocturne — install instructions
-          ================================
-          1. Copy nocturne-debug.apk to your Android phone (or download it there).
-          2. Open the file. When prompted, allow "Install unknown apps" for your
-             browser or file manager.
-          3. Install, launch Nocturne, and grant the microphone permission when you
-             tap Record. The "sample night" button works without the microphone.
-
-          This is a debug build, intended for personal use and testing.
-          Nocturne is a screening aid, not a medical device.
-
-          The www/ folder contains the full app source for reference.
-          TXT
-          VER="${GITHUB_REF_NAME}"
-          ZIP="nocturne-${VER}.zip"
-          # On branch pushes GITHUB_REF_NAME is the branch; give those a stable name.
-          case "$GITHUB_REF" in
-            refs/tags/*) : ;;
-            *) ZIP="nocturne-bundle.zip" ;;
-          esac
-          cd "$PKG" && zip -r "../dist/$ZIP" . > /dev/null && cd ..
-          echo "ZIP_PATH=dist/$ZIP" >> "$GITHUB_ENV"
-          ls -la dist
-
-      # Download this single zip from the run's "Artifacts" section on your phone.
-      - name: Upload release zip artifact
+      - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: nocturne-bundle
-          path: ${{ env.ZIP_PATH }}
+          path: dist/${{ env.ZIP_NAME }}
           if-no-files-found: error
 
-      # On a version tag, publish a Release with the zip (and APK) attached.
       - name: Publish Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ env.ZIP_PATH }}
+            dist/${{ env.ZIP_NAME }}
             dist/nocturne-debug.apk
           generate_release_notes: true
