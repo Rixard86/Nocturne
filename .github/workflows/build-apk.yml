@@ -97,6 +97,31 @@ jobs:
           fi
           npx cap sync android
 
+      # Install the custom Nocturne launcher icon. The icon set lives in
+      # android-icons/ (mipmap densities + adaptive descriptors). We remove
+      # Capacitor's default ic_launcher* assets first so nothing conflicts,
+      # then copy ours in. Any leftover adaptive background color/xml from the
+      # template is also cleared.
+      - name: Install custom app icon
+        working-directory: build
+        run: |
+          ICONS="android-icons"
+          RES="android/app/src/main/res"
+          if [ ! -d "$ICONS" ]; then
+            echo "::warning::android-icons/ not found; keeping default icon"
+          else
+            # remove default launcher icons across all densities
+            find "$RES" -name "ic_launcher*.png" -delete 2>/dev/null || true
+            find "$RES" -name "ic_launcher*.xml" -delete 2>/dev/null || true
+            find "$RES" -path "*-anydpi-v26*" -name "ic_launcher*.xml" -delete 2>/dev/null || true
+            # clear any template adaptive-icon background color definition
+            rm -f "$RES"/values/ic_launcher_background.xml 2>/dev/null || true
+            # copy our icon tree in
+            cp -a "$ICONS"/. "$RES"/
+            echo "----- res/ launcher assets after install -----"
+            find "$RES" -name "ic_launcher*" | sort
+          fi
+
       - name: Patch AndroidManifest for microphone
         working-directory: build
         run: |
