@@ -138,6 +138,87 @@ jobs:
           echo "----- Manifest -----"
           cat "$MANIFEST"
 
+      # Sign every build with the SAME committed debug keystore, and give each build a
+      # higher versionCode than the last. Together these let a newly built APK update an
+      # already-installed one in place (Android requires identical signing key + a higher
+      # versionCode). The keystore uses Android's standard debug credentials.
+      - name: Configure consistent signing & version
+        working-directory: build
+        run: |
+          set -e
+          GRADLE="android/app/build.gradle"
+          # 1) place the keystore where Gradle will read it (android/app/)
+          if [ -f debug.keystore ]; then
+            cp debug.keystore android/app/debug.keystore
+          elif [ -f ../debug.keystore ]; then
+            cp ../debug.keystore android/app/debug.keystore
+          else
+            echo "::error::debug.keystore not found in the project. Add it to nocturne-src.zip."
+            exit 1
+          fi
+
+          # 2) bump versionCode to the run number (monotonically increasing) and set a
+          #    readable versionName, then point signingConfigs.debug at our keystore.
+          VCODE="${GITHUB_RUN_NUMBER:-1}"
+          VNAME="1.0.${GITHUB_RUN_NUMBER:-0}"
+          python3 - "$GRADLE" "$VCODE" "$VNAME" <<'PY'
+          import re, sys
+          path, vcode, vname = sys.argv[1], sys.argv[2], sys.argv[3]
+          g = open(path).read()
+
+          # --- versionCode / versionName ---
+          if re.search(r'versionCode\s+\d+', g):
+              g = re.sub(r'versionCode\s+\d+', f'versionCode {vcode}', g, count=1)
+          else:
+              g = re.sub(r'(defaultConfig\s*\{)', r'\1\n        versionCode '+vcode, g, count=1)
+          if re.search(r'versionName\s+"[^"]*"', g):
+              g = re.sub(r'versionName\s+"[^"]*"', f'versionName "{vname}"', g, count=1)
+          else:
+              g = re.sub(r'(defaultConfig\s*\{)', r'\1\n        versionName "'+vname+'"', g, count=1)
+
+          # --- signingConfigs.debug -> our committed keystore ---
+          signing_block = (
+              '    signingConfigs {\n'
+              '        debug {\n'
+              "            storeFile file('debug.keystore')\n"
+              "            storePassword 'android'\n"
+              "            keyAlias 'androiddebugkey'\n"
+              "            keyPassword 'android'\n"
+              '        }\n'
+              '    }\n'
+          )
+          if re.search(r'signingConfigs\s*\{', g):
+              # replace the whole existing signingConfigs { ... } block (brace-matched)
+              start = g.index('signingConfigs')
+              i = g.index('{', start); depth = 0; end = i
+              for j in range(i, len(g)):
+                  if g[j] == '{': depth += 1
+                  elif g[j] == '}':
+                      depth -= 1
+                      if depth == 0: end = j+1; break
+              # keep original indentation of the line that starts signingConfigs
+              line_start = g.rfind('\n', 0, start)+1
+              g = g[:line_start] + signing_block + g[end:]
+          else:
+              # insert a signingConfigs block just inside android { }
+              g = re.sub(r'(android\s*\{)', r'\1\n'+signing_block, g, count=1)
+
+          # --- ensure buildTypes.debug uses signingConfigs.debug ---
+          if re.search(r'buildTypes\s*\{', g) and 'signingConfig signingConfigs.debug' not in g:
+              # add into a debug { } under buildTypes if present, else create buildTypes
+              if re.search(r'buildTypes\s*\{[^}]*debug\s*\{', g, re.S):
+                  g = re.sub(r'(buildTypes\s*\{.*?debug\s*\{)', r'\1\n            signingConfig signingConfigs.debug', g, count=1, flags=re.S)
+              else:
+                  g = re.sub(r'(buildTypes\s*\{)', r'\1\n        debug {\n            signingConfig signingConfigs.debug\n        }', g, count=1)
+
+          open(path, 'w').write(g)
+          print(f"versionCode -> {vcode}, versionName -> {vname}")
+          print("signingConfigs.debug -> debug.keystore")
+          PY
+
+          echo "----- build.gradle (signing & version) -----"
+          grep -nE "versionCode|versionName|signingConfigs|storeFile|signingConfig " "$GRADLE" || true
+
       - name: Make gradlew executable
         working-directory: build
         run: chmod +x android/gradlew
