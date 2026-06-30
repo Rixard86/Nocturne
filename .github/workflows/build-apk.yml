@@ -1,0 +1,129 @@
+name: Build Android APK
+
+# Builds an installable debug APK on every push to main, on manual trigger,
+# and attaches the APK to a GitHub Release whenever you push a version tag (e.g. v1.0.0).
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create Releases on tag pushes
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      # Generate the native android/ project on the runner if it isn't committed.
+      # This keeps the repo lightweight and fully mobile-manageable.
+      - name: Add Android platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          npx cap sync android
+
+      # Inject the microphone permission and cleartext setting into the generated manifest.
+      - name: Patch AndroidManifest for microphone
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if ! grep -q "android.permission.RECORD_AUDIO" "$MANIFEST"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-feature android:name="android.hardware.microphone" android:required="false" />\n\n    <application#' "$MANIFEST"
+          fi
+          echo "----- Manifest after patch -----"
+          cat "$MANIFEST"
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/nocturne-debug.apk
+          ls -la dist
+
+      # Download this from the run's "Artifacts" section on your phone's browser.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nocturne-debug-apk
+          path: dist/nocturne-debug.apk
+          if-no-files-found: error
+
+      # Bundle the built APK, the web source, and install notes into one zip.
+      - name: Package release zip
+        run: |
+          PKG="nocturne-bundle"
+          rm -rf "$PKG" && mkdir -p "$PKG"
+          cp dist/nocturne-debug.apk "$PKG/"
+          cp -r www "$PKG/www"
+          cp README.md "$PKG/" 2>/dev/null || true
+          cat > "$PKG/INSTALL.txt" <<'TXT'
+          Nocturne — install instructions
+          ================================
+          1. Copy nocturne-debug.apk to your Android phone (or download it there).
+          2. Open the file. When prompted, allow "Install unknown apps" for your
+             browser or file manager.
+          3. Install, launch Nocturne, and grant the microphone permission when you
+             tap Record. The "sample night" button works without the microphone.
+
+          This is a debug build, intended for personal use and testing.
+          Nocturne is a screening aid, not a medical device.
+
+          The www/ folder contains the full app source for reference.
+          TXT
+          VER="${GITHUB_REF_NAME}"
+          ZIP="nocturne-${VER}.zip"
+          # On branch pushes GITHUB_REF_NAME is the branch; give those a stable name.
+          case "$GITHUB_REF" in
+            refs/tags/*) : ;;
+            *) ZIP="nocturne-bundle.zip" ;;
+          esac
+          cd "$PKG" && zip -r "../dist/$ZIP" . > /dev/null && cd ..
+          echo "ZIP_PATH=dist/$ZIP" >> "$GITHUB_ENV"
+          ls -la dist
+
+      # Download this single zip from the run's "Artifacts" section on your phone.
+      - name: Upload release zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nocturne-bundle
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error
+
+      # On a version tag, publish a Release with the zip (and APK) attached.
+      - name: Publish Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_PATH }}
+            dist/nocturne-debug.apk
+          generate_release_notes: true
