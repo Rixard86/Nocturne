@@ -64,22 +64,51 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # Cache npm's download cache so dependencies aren't re-fetched every run.
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('build/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      # Cache Gradle's caches and wrapper — this is the biggest repeat-build speedup,
+      # avoiding re-download of the Android Gradle Plugin and dependencies each time.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('build/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Install dependencies
         working-directory: build
-        run: npm install
+        run: npm install --prefer-offline --no-audit --no-fund
 
       - name: Add Android platform
         working-directory: build
         run: |
-          npx cap add android
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
           npx cap sync android
 
       - name: Patch AndroidManifest for microphone
         working-directory: build
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
+          # Capacitor's WebChromeClient grants getUserMedia only after launching a
+          # request for BOTH RECORD_AUDIO and MODIFY_AUDIO_SETTINGS. Both must be
+          # declared here or the WebView mic request is denied even when the OS-level
+          # permission is granted.
           if ! grep -q "android.permission.RECORD_AUDIO" "$MANIFEST"; then
-            sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-feature android:name="android.hardware.microphone" android:required="false" />\n\n    <application#' "$MANIFEST"
+            sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-feature android:name="android.hardware.microphone" android:required="false" />\n\n    <application#' "$MANIFEST"
+          elif ! grep -q "android.permission.MODIFY_AUDIO_SETTINGS" "$MANIFEST"; then
+            sed -i 's#<uses-permission android:name="android.permission.RECORD_AUDIO" />#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />#' "$MANIFEST"
           fi
           echo "----- Manifest -----"
           cat "$MANIFEST"
@@ -92,7 +121,7 @@ jobs:
         working-directory: build
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon --build-cache --parallel --stacktrace
 
       - name: Collect outputs
         working-directory: build
