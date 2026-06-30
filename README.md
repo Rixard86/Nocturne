@@ -17,7 +17,7 @@ Android Studio, no local tooling. You manage everything from your phone.
 | `www/index.html` | The entire app (UI + on-device audio analysis) |
 | `package.json` | Capacitor dependencies (pinned) |
 | `capacitor.config.json` | App id, name, and plugin config |
-| `.github/workflows/build-apk.yml` | Builds the APK automatically |
+| `.github/workflows/build-apk.yml` | Builds the APK and zips it into a bundle automatically |
 | `.gitignore` | Keeps the repo light; the native project is generated in CI |
 
 The `android/` native project is **not** committed. The workflow generates it on the
@@ -41,18 +41,27 @@ Upload every file from this project to your GitHub repo, preserving the folder s
 Every push to the `main` (or `master`) branch triggers a build. You can also start one
 by hand: repo → **Actions** tab → **Build Android APK** → **Run workflow**.
 
-### 3. Download the APK
+### 3. Download the bundle
 When the run finishes (green check, ~5–8 min):
 
 - **Quick install:** repo → **Actions** → open the latest run → scroll to **Artifacts**
-  → tap **nocturne-debug-apk** to download the `.apk` to your phone.
+  → tap **nocturne-bundle** to download the zip to your phone.
 - **Or tag a release:** push a tag like `v1.0.0` and the workflow also publishes a
-  **GitHub Release** with the APK attached (repo → **Releases**).
+  **GitHub Release** with the zip and the raw APK attached (repo → **Releases**).
+
+The zip (`nocturne-bundle.zip`, or `nocturne-<tag>.zip` on a release) contains:
+
+| Inside the zip | What it is |
+|----------------|------------|
+| `nocturne-debug.apk` | The installable app |
+| `INSTALL.txt` | Install steps, generated at build time |
+| `www/` | The full app source, for reference |
+| `README.md` | This file |
 
 ### 4. Install it
-Open the downloaded `.apk` from your Downloads. Android will ask you to allow
-**"Install unknown apps"** for your browser/file manager — enable it, then install.
-Launch Nocturne and tap **Record**; grant the microphone permission when asked.
+Unzip the bundle and open `nocturne-debug.apk` from your Downloads. Android will ask you
+to allow **"Install unknown apps"** for your browser/file manager — enable it, then
+install. Launch Nocturne and tap **Record**; grant the microphone permission when asked.
 
 ---
 
