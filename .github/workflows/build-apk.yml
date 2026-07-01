@@ -97,6 +97,85 @@ jobs:
           fi
           npx cap sync android
 
+      # Install the native foreground-service audio capture (Kotlin) so recording
+      # survives screen-off. Copies the .kt/.java sources into the app package,
+      # enables Kotlin, adds required deps, and registers the service + permissions.
+      - name: Install native audio service
+        working-directory: build
+        run: |
+          set -e
+          PKG_DIR="android/app/src/main/java/com/nocturne/app"
+          mkdir -p "$PKG_DIR"
+          if [ ! -d native ]; then
+            echo "::error::native/ folder missing from project"; exit 1
+          fi
+          cp native/AudioCaptureService.kt "$PKG_DIR/"
+          cp native/NocturnePlugin.kt "$PKG_DIR/"
+          cp native/MainActivity.java "$PKG_DIR/MainActivity.java"   # replace default
+          echo "Native sources installed:"; ls -la "$PKG_DIR"
+
+          APP_GRADLE="android/app/build.gradle"
+          ROOT_GRADLE="android/build.gradle"
+
+          # 1) Kotlin gradle plugin version on the classpath (root build.gradle)
+          if ! grep -q "kotlin-gradle-plugin" "$ROOT_GRADLE"; then
+            python3 - "$ROOT_GRADLE" <<'PY'
+          import re,sys
+          p=sys.argv[1]; g=open(p).read()
+          dep='        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25"\n'
+          if 'dependencies {' in g:
+              g=re.sub(r'(dependencies\s*\{)', r'\1\n'+dep, g, count=1)
+          open(p,'w').write(g)
+          print("added kotlin classpath")
+          PY
+          fi
+
+          # 2) apply kotlin-android plugin + core-ktx dep in app build.gradle
+          python3 - "$APP_GRADLE" <<'PY'
+          import re,sys
+          p=sys.argv[1]; g=open(p).read()
+          if "kotlin-android" not in g:
+              # add after the com.android.application apply line
+              if "apply plugin: 'com.android.application'" in g:
+                  g=g.replace("apply plugin: 'com.android.application'",
+                              "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",1)
+              else:
+                  g="apply plugin: 'kotlin-android'\n"+g
+          # ensure core-ktx (provides androidx.core.app.NotificationCompat + ContextCompat)
+          if "androidx.core:core-ktx" not in g:
+              dep="    implementation \"androidx.core:core-ktx:1.13.1\"\n"
+              g=re.sub(r'(dependencies\s*\{)', r'\1\n'+dep, g, count=1)
+          open(p,'w').write(g)
+          print("applied kotlin-android + core-ktx")
+          PY
+
+          # 3) manifest: foreground-service permissions + <service> registration
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 - "$MANIFEST" <<'PY'
+          import re,sys
+          p=sys.argv[1]; m=open(p).read()
+          perms = [
+            '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+            '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
+            '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+            '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+          ]
+          add = "\n    ".join(x for x in perms if x not in m)
+          if add:
+              m = m.replace("<application", add + "\n\n    <application", 1)
+          # register the service inside <application> if not present
+          if "AudioCaptureService" not in m:
+              svc = ('        <service\n'
+                     '            android:name=".AudioCaptureService"\n'
+                     '            android:exported="false"\n'
+                     '            android:foregroundServiceType="microphone" />\n')
+              m = re.sub(r'(</application>)', svc + r'\1', m, count=1)
+          open(p,'w').write(m)
+          print("manifest: fgs permissions + service registered")
+          PY
+          echo "----- Manifest after native install -----"
+          cat "$MANIFEST"
+
       # Install the custom Nocturne launcher icon. The icon set lives in
       # android-icons/ (mipmap densities + adaptive descriptors). We remove
       # Capacitor's default ic_launcher* assets first so nothing conflicts,
