@@ -109,8 +109,7 @@ jobs:
           if [ ! -d native ]; then
             echo "::error::native/ folder missing from project"; exit 1
           fi
-          cp native/AudioCaptureService.kt "$PKG_DIR/"
-          cp native/NocturnePlugin.kt "$PKG_DIR/"
+          cp native/*.kt "$PKG_DIR/"
           cp native/MainActivity.java "$PKG_DIR/MainActivity.java"   # replace default
           echo "Native sources installed:"; ls -la "$PKG_DIR"
 
