@@ -1,0 +1,16 @@
+{
+  "appId": "com.nocturne.app",
+  "appName": "Nocturne",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "Microphone": {
+      "permissions": ["microphone"]
+    }
+  }
+}

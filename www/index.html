@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Nocturne — Snore & Breathing Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="bg-aura"></div>
+<div class="app">
+  <header>
+    <div class="brand">Nocturne<span class="dot">.</span></div>
+    <div class="tag" id="clock">—</div>
+  </header>
+
+  <main>
+    <!-- ============ RECORD ============ -->
+    <section class="view active" id="view-record">
+      <canvas id="halo"></canvas>
+      <div class="halo-wrap">
+        <div class="halo-center">
+          <div class="halo-state" id="haloState">Idle</div>
+          <div class="halo-db"><span id="levelVal">—</span></div>
+          <div class="halo-unit">sound level</div>
+        </div>
+      </div>
+      <div class="halo-sub" id="haloSub">Tap record to begin</div>
+      <div id="dbgLine" style="display:none;font-family:'JetBrains Mono',monospace;font-size:11px;color:#7C7CF0;text-align:center;margin-top:2px"></div>
+
+      <div class="live-stats">
+        <div class="lstat"><div class="v" id="lsSnore">0</div><div class="l">Snore events</div></div>
+        <div class="lstat"><div class="v flag" id="lsPause">0</div><div class="l">Breath pauses</div></div>
+        <div class="lstat"><div class="v" id="lsElapsed">0:00</div><div class="l">Elapsed</div></div>
+      </div>
+
+      <div class="sens-row">
+        <span class="sens-label" id="sensLabel">Detection · Auto</span>
+        <div class="seg small" id="sensSeg" style="display:none">
+          <button data-sens="auto" class="on">Auto</button>
+          <button data-sens="low">Low</button>
+          <button data-sens="med">Medium</button>
+          <button data-sens="high">High</button>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="rec-btn" id="recBtn" aria-label="Start recording"><span class="glyph"></span></button>
+        <div class="rec-hint" id="recHint">Place your phone face-down on the mattress or nightstand, within arm's reach. Keep it plugged in.</div>
+        <button class="ghost-btn" id="demoBtn">Load a sample night instead</button>
+        <div class="mic-note">Audio is processed on your device to detect snoring and breathing pauses. Nothing is uploaded.</div>
+      </div>
+    </section>
+
+    <!-- ============ REPORT ============ -->
+    <section class="view" id="view-report">
+      <div id="reportBody"></div>
+    </section>
+
+    <!-- ============ LOG ============ -->
+    <section class="view" id="view-log">
+      <div class="sec-title"><span class="bar"></span>Last night's factors</div>
+      <p class="log-intro">Log what you did before bed. Over time, Nocturne shows which factors and remedies move your score.</p>
+
+      <div style="font-size:12px;color:var(--faint);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px">Lifestyle factors</div>
+      <div class="chip-grid" id="factorChips"></div>
+
+      <div style="font-size:12px;color:var(--faint);text-transform:uppercase;letter-spacing:.1em;margin:20px 0 10px">Remedies tried</div>
+      <div class="chip-grid" id="remedyChips"></div>
+
+      <div class="save-row">
+        <button class="save-btn" id="saveLog">Save to last night</button>
+      </div>
+    </section>
+
+    <!-- ============ TRENDS ============ -->
+    <section class="view" id="view-trends">
+      <div id="trendsBody"></div>
+    </section>
+
+    <!-- ============ ALARM ============ -->
+    <section class="view" id="view-alarm">
+      <div class="sec-title"><span class="bar"></span>Smart alarm</div>
+      <p class="log-intro">Wake gently at a light-sleep moment near your set time. When a sleep recording is running, Nocturne watches for the lightest point in the window and wakes you then — or at your set time if it doesn't find one.</p>
+
+      <div class="alarm-row">
+        <div class="alarm-head">
+          <span class="sens-label">Enable smart alarm</span>
+          <label class="switch"><input type="checkbox" id="alarmToggle"><span class="slider"></span></label>
+        </div>
+        <div class="alarm-body" id="alarmBody" style="display:none">
+          <div class="alarm-field">
+            <span>Wake by</span>
+            <input type="time" id="alarmTime" value="07:00">
+          </div>
+          <div class="alarm-field">
+            <span>Window</span>
+            <div class="seg small" id="alarmWin">
+              <button data-win="15">15m</button>
+              <button data-win="30" class="on">30m</button>
+              <button data-win="45">45m</button>
+            </div>
+          </div>
+          <div class="alarm-note">Nocturne wakes you at a light-sleep moment within the window before your set time, or at the time itself.</div>
+        </div>
+      </div>
+
+      <div class="alarm-status" id="alarmStatus"></div>
+    </section>
+  </main>
+
+  <nav>
+    <button class="nav-btn active" data-view="record">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="11" r="4"/><path d="M12 15v4M8 19h8M12 3v2"/></svg>Record</button>
+    <button class="nav-btn" data-view="report">
+      <svg viewBox="0 0 24 24"><path d="M3 13h3l2-6 3 12 3-9 2 3h5"/></svg>Report</button>
+    <button class="nav-btn" data-view="log">
+      <svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="19" cy="19" r="2"/></svg>Log</button>
+    <button class="nav-btn" data-view="trends">
+      <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M8 16l3-4 3 2 4-6"/></svg>Trends</button>
+    <button class="nav-btn" data-view="alarm">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M5 3 2 6M19 3l3 3"/></svg>Alarm</button>
+  </nav>
+</div>
+<div class="toast" id="toast"></div>
+
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

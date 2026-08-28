@@ -1,12 +1,14 @@
 name: Build Android APK
 
-# Self-contained build. The repo only needs this file plus nocturne-src.zip
-# (the app files). This workflow extracts the zip, generates the native Android
-# project, injects the microphone permission, and builds an installable APK.
+# Builds an installable APK from the source tree in this repo. The native android/
+# project is generated and patched by scripts/prepare-android.sh, the same script
+# used for local builds.
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
     tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -20,40 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Extract the app files from nocturne-src.zip into a clean build folder.
-      # The zip holds package.json, capacitor.config.json, and www/ at its top level.
-      - name: Extract app source
-        run: |
-          set -e
-          mkdir -p build
-          if [ -f package.json ]; then
-            echo "Loose files found at repo root; copying into build/"
-            cp -a ./. build/ 2>/dev/null || true
-          else
-            ZIP=$(ls *.zip 2>/dev/null | head -n1 || true)
-            if [ -z "$ZIP" ]; then
-              echo "::error::No package.json and no .zip found in the repo. Upload nocturne-src.zip."
-              exit 1
-            fi
-            echo "Extracting $ZIP"
-            unzip -o "$ZIP" -d build > /dev/null
-            # If the zip wrapped everything in one folder, unwrap it.
-            if [ ! -f build/package.json ]; then
-              INNER=$(dirname "$(find build -name package.json | head -n1)")
-              if [ -n "$INNER" ] && [ "$INNER" != "build" ]; then
-                cp -a "$INNER"/. build/
-              fi
-            fi
-          fi
-          echo "----- build/ contents -----"
-          ls -la build
-          test -f build/package.json || { echo "::error::package.json not found after extraction"; exit 1; }
-          test -f build/www/index.html || { echo "::error::www/index.html not found after extraction"; exit 1; }
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -64,288 +37,20 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # Cache npm's download cache so dependencies aren't re-fetched every run.
-      - name: Cache npm
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('build/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-npm-
-
-      # Cache Gradle's caches and wrapper — this is the biggest repeat-build speedup,
-      # avoiding re-download of the Android Gradle Plugin and dependencies each time.
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('build/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install dependencies
-        working-directory: build
-        run: npm install --prefer-offline --no-audit --no-fund
+        run: npm ci --prefer-offline --no-audit --no-fund
 
-      - name: Add Android platform
-        working-directory: build
-        run: |
-          if [ ! -d android ]; then
-            npx cap add android
-          fi
-          npx cap sync android
-
-      # Install the native foreground-service audio capture (Kotlin) so recording
-      # survives screen-off. Copies the .kt/.java sources into the app package,
-      # enables Kotlin, adds required deps, and registers the service + permissions.
-      - name: Install native audio service
-        working-directory: build
-        run: |
-          set -e
-          PKG_DIR="android/app/src/main/java/com/nocturne/app"
-          mkdir -p "$PKG_DIR"
-          if [ ! -d native ]; then
-            echo "::error::native/ folder missing from project"; exit 1
-          fi
-          cp native/*.kt "$PKG_DIR/"
-          cp native/MainActivity.java "$PKG_DIR/MainActivity.java"   # replace default
-          echo "Native sources installed:"; ls -la "$PKG_DIR"
-
-          APP_GRADLE="android/app/build.gradle"
-          ROOT_GRADLE="android/build.gradle"
-
-          # 1) Kotlin gradle plugin version on the classpath (root build.gradle)
-          if ! grep -q "kotlin-gradle-plugin" "$ROOT_GRADLE"; then
-            python3 - "$ROOT_GRADLE" <<'PY'
-          import re,sys
-          p=sys.argv[1]; g=open(p).read()
-          dep='        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25"\n'
-          if 'dependencies {' in g:
-              g=re.sub(r'(dependencies\s*\{)', r'\1\n'+dep, g, count=1)
-          open(p,'w').write(g)
-          print("added kotlin classpath")
-          PY
-          fi
-
-          # 2) apply kotlin-android plugin + core-ktx dep in app build.gradle
-          python3 - "$APP_GRADLE" <<'PY'
-          import re,sys
-          p=sys.argv[1]; g=open(p).read()
-          if "kotlin-android" not in g:
-              # add after the com.android.application apply line
-              if "apply plugin: 'com.android.application'" in g:
-                  g=g.replace("apply plugin: 'com.android.application'",
-                              "apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'",1)
-              else:
-                  g="apply plugin: 'kotlin-android'\n"+g
-          # ensure core-ktx (provides androidx.core.app.NotificationCompat + ContextCompat)
-          if "androidx.core:core-ktx" not in g:
-              dep="    implementation \"androidx.core:core-ktx:1.13.1\"\n"
-              g=re.sub(r'(dependencies\s*\{)', r'\1\n'+dep, g, count=1)
-          open(p,'w').write(g)
-          print("applied kotlin-android + core-ktx")
-          PY
-
-          # 3) manifest: foreground-service permissions + <service> registration
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          python3 - "$MANIFEST" <<'PY'
-          import re,sys
-          p=sys.argv[1]; m=open(p).read()
-          perms = [
-            '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
-            '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />',
-            '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-            '<uses-permission android:name="android.permission.WAKE_LOCK" />',
-            '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />',
-          ]
-          add = "\n    ".join(x for x in perms if x not in m)
-          if add:
-              m = m.replace("<application", add + "\n\n    <application", 1)
-          # register the service inside <application> if not present
-          if "AudioCaptureService" not in m:
-              svc = ('        <service\n'
-                     '            android:name=".AudioCaptureService"\n'
-                     '            android:exported="false"\n'
-                     '            android:foregroundServiceType="microphone" />\n')
-              m = re.sub(r'(</application>)', svc + r'\1', m, count=1)
-          open(p,'w').write(m)
-          print("manifest: fgs permissions + service registered")
-          PY
-          echo "----- Manifest after native install -----"
-          cat "$MANIFEST"
-
-      # Install the custom Nocturne launcher icon. The icon set lives in
-      # android-icons/ (mipmap densities + adaptive descriptors). We remove
-      # Capacitor's default ic_launcher* assets first so nothing conflicts,
-      # then copy ours in. Any leftover adaptive background color/xml from the
-      # template is also cleared.
-      - name: Install custom app icon
-        working-directory: build
-        run: |
-          ICONS="android-icons"
-          RES="android/app/src/main/res"
-          if [ ! -d "$ICONS" ]; then
-            echo "::warning::android-icons/ not found; keeping default icon"
-          else
-            # remove default launcher icons across all densities
-            find "$RES" -name "ic_launcher*.png" -delete 2>/dev/null || true
-            find "$RES" -name "ic_launcher*.xml" -delete 2>/dev/null || true
-            find "$RES" -path "*-anydpi-v26*" -name "ic_launcher*.xml" -delete 2>/dev/null || true
-            # clear any template adaptive-icon background color definition
-            rm -f "$RES"/values/ic_launcher_background.xml 2>/dev/null || true
-            # copy our icon tree in
-            cp -a "$ICONS"/. "$RES"/
-            echo "----- res/ launcher assets after install -----"
-            find "$RES" -name "ic_launcher*" | sort
-          fi
-
-      - name: Patch AndroidManifest for microphone
-        working-directory: build
-        run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          # Capacitor's WebChromeClient grants getUserMedia only after launching a
-          # request for BOTH RECORD_AUDIO and MODIFY_AUDIO_SETTINGS. Both must be
-          # declared here or the WebView mic request is denied even when the OS-level
-          # permission is granted.
-          if ! grep -q "android.permission.RECORD_AUDIO" "$MANIFEST"; then
-            sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-feature android:name="android.hardware.microphone" android:required="false" />\n\n    <application#' "$MANIFEST"
-          elif ! grep -q "android.permission.MODIFY_AUDIO_SETTINGS" "$MANIFEST"; then
-            sed -i 's#<uses-permission android:name="android.permission.RECORD_AUDIO" />#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />#' "$MANIFEST"
-          fi
-          echo "----- Manifest -----"
-          cat "$MANIFEST"
-
-      # Sign every build with the SAME committed debug keystore, and give each build a
-      # higher versionCode than the last. Together these let a newly built APK update an
-      # already-installed one in place (Android requires identical signing key + a higher
-      # versionCode). The keystore uses Android's standard debug credentials.
-      - name: Configure consistent signing & version
-        working-directory: build
-        run: |
-          set -e
-          GRADLE="android/app/build.gradle"
-          # 1) place the keystore where Gradle will read it (android/app/)
-          if [ -f debug.keystore ]; then
-            cp debug.keystore android/app/debug.keystore
-          elif [ -f ../debug.keystore ]; then
-            cp ../debug.keystore android/app/debug.keystore
-          else
-            echo "::error::debug.keystore not found in the project. Add it to nocturne-src.zip."
-            exit 1
-          fi
-
-          # 2) bump versionCode to the run number (monotonically increasing) and set a
-          #    readable versionName, then point signingConfigs.debug at our keystore.
-          VCODE="${GITHUB_RUN_NUMBER:-1}"
-          VNAME="1.0.${GITHUB_RUN_NUMBER:-0}"
-          python3 - "$GRADLE" "$VCODE" "$VNAME" <<'PY'
-          import re, sys
-          path, vcode, vname = sys.argv[1], sys.argv[2], sys.argv[3]
-          g = open(path).read()
-
-          # --- versionCode / versionName ---
-          if re.search(r'versionCode\s+\d+', g):
-              g = re.sub(r'versionCode\s+\d+', f'versionCode {vcode}', g, count=1)
-          else:
-              g = re.sub(r'(defaultConfig\s*\{)', r'\1\n        versionCode '+vcode, g, count=1)
-          if re.search(r'versionName\s+"[^"]*"', g):
-              g = re.sub(r'versionName\s+"[^"]*"', f'versionName "{vname}"', g, count=1)
-          else:
-              g = re.sub(r'(defaultConfig\s*\{)', r'\1\n        versionName "'+vname+'"', g, count=1)
-
-          # --- signingConfigs.debug -> our committed keystore ---
-          signing_block = (
-              '    signingConfigs {\n'
-              '        debug {\n'
-              "            storeFile file('debug.keystore')\n"
-              "            storePassword 'android'\n"
-              "            keyAlias 'androiddebugkey'\n"
-              "            keyPassword 'android'\n"
-              '        }\n'
-              '    }\n'
-          )
-          if re.search(r'signingConfigs\s*\{', g):
-              # replace the whole existing signingConfigs { ... } block (brace-matched)
-              start = g.index('signingConfigs')
-              i = g.index('{', start); depth = 0; end = i
-              for j in range(i, len(g)):
-                  if g[j] == '{': depth += 1
-                  elif g[j] == '}':
-                      depth -= 1
-                      if depth == 0: end = j+1; break
-              # keep original indentation of the line that starts signingConfigs
-              line_start = g.rfind('\n', 0, start)+1
-              g = g[:line_start] + signing_block + g[end:]
-          else:
-              # insert a signingConfigs block just inside android { }
-              g = re.sub(r'(android\s*\{)', r'\1\n'+signing_block, g, count=1)
-
-          # --- ensure buildTypes.debug uses signingConfigs.debug ---
-          if re.search(r'buildTypes\s*\{', g) and 'signingConfig signingConfigs.debug' not in g:
-              # add into a debug { } under buildTypes if present, else create buildTypes
-              if re.search(r'buildTypes\s*\{[^}]*debug\s*\{', g, re.S):
-                  g = re.sub(r'(buildTypes\s*\{.*?debug\s*\{)', r'\1\n            signingConfig signingConfigs.debug', g, count=1, flags=re.S)
-              else:
-                  g = re.sub(r'(buildTypes\s*\{)', r'\1\n        debug {\n            signingConfig signingConfigs.debug\n        }', g, count=1)
-
-          open(path, 'w').write(g)
-          print(f"versionCode -> {vcode}, versionName -> {vname}")
-          print("signingConfigs.debug -> debug.keystore")
-          PY
-
-          echo "----- build.gradle (signing & version) -----"
-          grep -nE "versionCode|versionName|signingConfigs|storeFile|signingConfig " "$GRADLE" || true
-
-      - name: Make gradlew executable
-        working-directory: build
-        run: chmod +x android/gradlew
+      - name: Prepare native project
+        run: npm run prepare:android
 
       - name: Build debug APK
-        working-directory: build
-        run: |
-          cd android
-          ./gradlew assembleDebug --no-daemon --build-cache --parallel --stacktrace
+        run: node scripts/gradle.mjs assembleDebug --no-daemon --build-cache --parallel --stacktrace
 
       - name: Collect outputs
-        working-directory: build
-        run: |
-          mkdir -p ../dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk ../dist/nocturne-debug.apk
-          # Bundle APK + source + install notes into one zip.
-          PKG="../dist/nocturne-bundle"
-          rm -rf "$PKG" && mkdir -p "$PKG"
-          cp ../dist/nocturne-debug.apk "$PKG/"
-          cp -r www "$PKG/www"
-          cp README.md "$PKG/" 2>/dev/null || true
-          cat > "$PKG/INSTALL.txt" <<'TXT'
-          Nocturne — install instructions
-          1. Copy nocturne-debug.apk to your Android phone (or download it there).
-          2. Open the file; allow "Install unknown apps" when prompted.
-          3. Launch Nocturne, tap Record, grant the microphone permission.
-             The "sample night" button works without the microphone.
-          Debug build for personal use. Screening aid, not a medical device.
-          TXT
-          ZIP="nocturne-bundle.zip"
-          case "$GITHUB_REF" in refs/tags/*) ZIP="nocturne-${GITHUB_REF_NAME}.zip" ;; esac
-          (cd "$PKG" && zip -r "../$ZIP" . > /dev/null)
-          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
-          ls -la ../dist
-
-      # Decide the release tag. On a manual version tag push (vX.Y.Z) we reuse it;
-      # otherwise we mint an auto-incrementing tag from the run number so every build
-      # publishes a unique, always-increasing release.
-      - name: Determine release tag
-        id: tag
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-          else
-            TAG="v1.0.${GITHUB_RUN_NUMBER}"
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $TAG"
+        run: bash scripts/bundle.sh
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -361,10 +66,21 @@ jobs:
           path: dist/${{ env.ZIP_NAME }}
           if-no-files-found: error
 
-      # Publish a GitHub Release on every build. softprops/action-gh-release creates
-      # the tag itself (via the target commit) without pushing a tag ref, so this does
-      # not retrigger the workflow.
+      # Publish a release on pushes to main and on version tags, but not for PR runs.
+      # softprops/action-gh-release creates the tag from the target commit without
+      # pushing a tag ref, so this does not retrigger the workflow.
+      - name: Determine release tag
+        if: github.event_name != 'pull_request'
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "TAG=v1.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish Release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
