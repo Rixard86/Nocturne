@@ -127,8 +127,14 @@ class NocturnePlugin : Plugin() {
 
     @PluginMethod
     fun getState(call: PluginCall) {
-        // Returns the persisted session so the UI can re-attach after an OS-killed WebView.
-        // { active, running, startMs, sensitivity, events:[...] }
+        // A full night's log is 25k+ lines and over a megabyte. Parsing it and marshalling
+        // it across the bridge takes seconds, and this runs on every launch — on the main
+        // thread that is a grey screen before the UI appears. Do it off the main thread.
+        Thread { call.resolve(buildState()) }.start()
+    }
+
+    /** Assemble the persisted session: { active, running, startMs, sensitivity, events }. */
+    private fun buildState(): JSObject {
         val res = JSObject()
         res.put("running", AudioCaptureService.running)
         try {
@@ -146,23 +152,96 @@ class NocturnePlugin : Plugin() {
             res.put("active", active)
             res.put("startMs", startMs)
             res.put("sensitivity", sens)
-            val log = File(dir, "events.jsonl")
-            val arr = com.getcapacitor.JSArray()
-            if (log.exists()) {
-                val lines: List<String> = log.readLines()
-                for (raw in lines) {
-                    val t: String = raw.trim()
-                    if (t.isNotEmpty()) {
-                        try { arr.put(JSObject(t)) } catch (_: Exception) {}
-                    }
-                }
-            }
-            res.put("events", arr)
+            res.put("events", readSessionEvents(File(dir, "events.jsonl")))
         } catch (e: Exception) {
             res.put("active", false)
             res.put("events", com.getcapacitor.JSArray())
         }
-        call.resolve(res)
+        return res
+    }
+
+    // The UI reads only these four event types; "epi" / "rhythm" / "cfg" are diagnostics
+    // for offline analysis and are pure weight across the bridge.
+    private val uiEventTypes = setOf("sample", "snore", "sound", "pause")
+
+    // Samples arrive once a second — 28,800 a night — but every consumer downsamples:
+    // the timeline to 800 buckets, the hypnogram to 5-minute bins. Collapsing them here to
+    // one per bucket keeps the loudest of each, which is what the charts would have kept.
+    private val sampleBucketSec = 10.0
+
+    /** Cheap scalar extraction, to avoid parsing 25k JSON objects just to bucket them. */
+    private fun rawField(line: String, key: String): String? {
+        val at = line.indexOf("\"$key\":")
+        if (at < 0) return null
+        val from = at + key.length + 3
+        var to = from
+        while (to < line.length && line[to] != ',' && line[to] != '}') to++
+        return line.substring(from, to)
+    }
+
+    private fun isSample(line: String) = line.contains("\"e\":\"sample\"")
+
+    private fun uiEventType(line: String): String? {
+        val kind = rawField(line, "e")?.trim('"') ?: return null
+        return if (kind in uiEventTypes) kind else null
+    }
+
+    /**
+     * Read the session log, keeping every real event but only the loudest sample per
+     * bucket. Returns the events the UI can actually use.
+     */
+    private fun readSessionEvents(log: File): com.getcapacitor.JSArray {
+        val arr = com.getcapacitor.JSArray()
+        if (!log.exists()) return arr
+        var bucket = -1L
+        var bestLine: String? = null
+        var bestLevel = -1
+
+        fun flush() {
+            bestLine?.let { line -> runCatching { arr.put(JSObject(line)) } }
+            bestLine = null; bestLevel = -1
+        }
+
+        log.forEachLine { raw ->
+            val line = raw.trim()
+            if (line.isNotEmpty() && uiEventType(line) != null) {
+                if (!isSample(line)) {
+                    runCatching { arr.put(JSObject(line)) }
+                } else {
+                    val at = rawField(line, "t")?.toDoubleOrNull() ?: 0.0
+                    val level = rawField(line, "lvl")?.toIntOrNull() ?: 0
+                    val slot = (at / sampleBucketSec).toLong()
+                    if (slot != bucket) { flush(); bucket = slot }
+                    if (level > bestLevel) { bestLevel = level; bestLine = line }
+                }
+            }
+        }
+        flush()
+        return arr
+    }
+
+    /**
+     * Retire the persisted session once the UI has finalized it. Without this the log
+     * outlives the night that produced it, and every subsequent cold launch recovers and
+     * re-finalizes the same recording, stamping each copy with the launch time.
+     *
+     * The log is ARCHIVED rather than deleted: it is the only diagnostic record of the
+     * night, and it is normally pulled the morning after — which is exactly when this
+     * runs. Recovery reads events.jsonl, so moving it aside is enough to stop the loop.
+     */
+    @PluginMethod
+    fun clearSession(call: PluginCall) {
+        try {
+            val dir = File(context.filesDir, "nocturne_session")
+            val log = File(dir, "events.jsonl")
+            if (log.exists()) {
+                val archive = File(dir, "events-last.jsonl")
+                archive.delete()
+                if (!log.renameTo(archive)) log.delete()
+            }
+            File(dir, "session.json").delete()
+        } catch (_: Exception) {}
+        call.resolve()
     }
 
     @PluginMethod

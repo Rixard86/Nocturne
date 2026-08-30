@@ -1,0 +1,94 @@
+// Pull the last night's diagnostic log off the phone and summarise it.
+//
+// The session log is DELETED when the next recording starts, so pull before recording
+// again. Requires USB debugging enabled and the debug build installed (run-as only works
+// on a debuggable package).
+import { writeFileSync } from 'fs';
+import { adb, selectDevice } from './adb-device.mjs';
+
+const PACKAGE = 'com.nocturne.app';
+// The live log is moved aside once the app finalizes the night, so fall back to the
+// archive — which is the usual case when pulling the morning after.
+const REMOTE_LOGS = [
+  'files/nocturne_session/events.jsonl',
+  'files/nocturne_session/events-last.jsonl',
+];
+const OUT_FILE = process.argv[2] ?? 'night.jsonl';
+
+const DEVICE = selectDevice();
+
+function readRemote(path) {
+  // exec-out, not shell: it streams raw bytes without the pty's newline translation.
+  const result = adb(['exec-out', 'run-as', PACKAGE, 'cat', path], DEVICE);
+  const text = result.stdout.toString('utf8');
+  const missing = !text.trim() || text.includes('No such file') || text.includes('is unknown');
+  return { text, missing, stderr: result.stderr };
+}
+
+function pullLog() {
+  let last = { stderr: Buffer.alloc(0) };
+  for (const path of REMOTE_LOGS) {
+    const result = readRemote(path);
+    last = result;
+    if (!result.missing) {
+      console.log(`Reading ${path}`);
+      return result.text;
+    }
+  }
+  console.error(
+    `No log found in ${REMOTE_LOGS.join(' or ')}.\n\n` +
+    'Likely causes:\n' +
+    '  - a new recording was started, which deletes the previous log\n' +
+    '  - the app was reinstalled since the recording\n' +
+    '  - this is a release build (run-as needs a debuggable package)\n' +
+    (last.stderr.length ? `\nadb said: ${last.stderr.toString().trim()}` : '')
+  );
+  process.exit(1);
+}
+
+function tally(lines, event, field) {
+  const counts = new Map();
+  const matcher = new RegExp(`"${field}":"([^"]*)"`);
+  for (const line of lines) {
+    if (!line.includes(`"e":"${event}"`)) continue;
+    const found = matcher.exec(line);
+    const key = found ? found[1] : '(none)';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function printTally(title, rows) {
+  console.log(`\n${title}`);
+  if (!rows.length) { console.log('  (none)'); return; }
+  const width = Math.max(...rows.map(r => String(r[1]).length));
+  for (const [key, count] of rows) {
+    console.log(`  ${String(count).padStart(width)}  ${key}`);
+  }
+}
+
+function main() {
+  const text = pullLog();
+  writeFileSync(OUT_FILE, text);
+  const lines = text.split('\n').filter(Boolean);
+
+  console.log(`Saved ${lines.length} events to ${OUT_FILE}`);
+
+  const config = lines.find(line => line.includes('"e":"cfg"'));
+  console.log('\nCapture configuration');
+  console.log(config ? `  ${config}` : '  (none — this log predates config logging)');
+
+  printTally('Rhythm gate outcomes  (did snores get confirmed?)', tally(lines, 'rhythm', 'out'));
+  printTally('Episode reject reasons  (which gate ate them?)', tally(lines, 'epi', 'reject'));
+  printTally('Episode classifications', tally(lines, 'epi', 'kind'));
+
+  const snores = lines.filter(line => line.includes('"e":"snore"')).length;
+  const pauses = lines.filter(line => line.includes('"e":"pause"')).length;
+  const samples = lines.filter(line => line.includes('"e":"sample"')).length;
+  console.log(
+    `\nEmitted: ${snores} snores, ${pauses} pauses` +
+    `\nDuration: ~${(samples / 60).toFixed(0)} min of samples`
+  );
+}
+
+main();

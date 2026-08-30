@@ -138,12 +138,16 @@ async function reattachSession(plugin){
     toast('Reconnected to your in-progress recording.');
     return true;
   } else {
-    // service stopped while the UI was gone — reconstruct and finalize so it isn't lost
+    // Service stopped while the UI was gone — reconstruct and finalize so it isn't lost.
+    // The log MUST be cleared afterwards: it outlives the night that produced it, so
+    // without this every later cold launch recovers the same recording again and adds a
+    // duplicate stamped with the launch time.
     S.samples=rebuilt.samples; S.events=rebuilt.events; S.sounds=rebuilt.sounds; S.pauses=rebuilt.pauses;
     S.startTime = st.startMs || Date.now();
     S.native=true;
     finalize(false);
     S.native=false;
+    if(plugin.clearSession){ try{ await plugin.clearSession(); }catch(e){} }
     switchView('report');
     toast('Recovered a recording that ended while the app was closed.');
     return true;

@@ -233,7 +233,35 @@
   .nav-btn.active{color:var(--sig-a)}
   .nav-btn.active svg{stroke:var(--sig-a)}
 
-  .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);z-index:20;
+  .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);z-index:200;
     background:var(--panel-2);border:1px solid var(--sig-b);color:var(--txt);padding:12px 20px;border-radius:12px;
     font-size:13px;opacity:0;transition:.3s;pointer-events:none;white-space:nowrap}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* ---------- boot screen ----------
+     Visible by default so it paints with the first frame; main.js removes it once
+     startup settles. The ring borrows the record screen's breath motif rather than
+     using a generic spinner. */
+  .boot{position:fixed;inset:0;z-index:100;background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+    transition:opacity .45s ease}
+  .boot.done{opacity:0;pointer-events:none}
+  .boot .brand{font-size:26px}
+  .boot-ring{width:56px;height:56px;border-radius:50%;
+    border:1.5px solid var(--sig-a);
+    box-shadow:0 0 32px rgba(56,225,198,.28);
+    animation:bootBreathe 2.6s ease-in-out infinite}
+  .boot-status{font-size:13px;color:var(--muted);min-height:1.3em;letter-spacing:.2px}
+  @keyframes bootBreathe{
+    0%,100%{transform:scale(.72);opacity:.35}
+    50%{transform:scale(1);opacity:.95}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .boot-ring{animation:none;opacity:.8}
+    .boot{transition:none}
+  }
+
+  /* ---------- playback clarity toggle ---------- */
+  .player-enh{display:flex;align-items:center;gap:10px;margin-top:10px;
+    padding-top:10px;border-top:1px solid var(--line)}
+  .player-enh .pnav.on{background:rgba(56,225,198,.16);border-color:var(--sig-a);color:var(--sig-a)}

@@ -99,11 +99,28 @@ That regenerates and patches `android/`, then runs `assembleDebug`. The APK land
 | Script | Does |
 |--------|------|
 | `npm run dev` | Static server for `www/` on port 5173 |
+| `npm run deploy` | Prepare, build, and install to the phone — the usual one |
+| `npm run pull:night` | Pull last night's diagnostic log and summarise it |
 | `npm run prepare:android` | Generate + patch the native project (no compile) |
 | `npm run build:android` | Prepare, then build the debug APK |
+| `npm run install:android` | Install the built APK |
 | `npm run clean:android` | Gradle clean |
 | `npm run open:android` | Open the project in Android Studio |
 | `npm run sync` | Copy web assets + plugins into `android/` |
+
+The device scripts prefer a physically connected phone and ignore emulators. Pass
+`--device <serial>` or set `ANDROID_SERIAL` when more than one phone is attached.
+
+### Diagnosing a night
+
+The detector writes a JSON-lines log beside the normal session events: one `epi` record
+per episode with its full feature vector and the gate that rejected it, one `rhythm`
+record per confirmation decision, and one `cfg` record naming the capture path actually
+in use. `npm run pull:night` fetches it and prints the reject histograms.
+
+The log is archived to `events-last.jsonl` once the app finalizes a night, so pulling the
+morning after works — but starting a **new recording** deletes the live log, so pull
+before recording again.
 
 Editing anything under `www/` only needs `npm run sync` before rebuilding — a full
 `prepare:android` is only required after changing `native/`, the icons, or the config.
@@ -119,9 +136,10 @@ Download it from the repo's **Actions** tab → newest run → **Artifacts**
 (`nocturne-debug-apk`, or `nocturne-bundle` for the APK plus source and install notes).
 Pushes to `main` also publish a **Release** tagged `v1.0.<run number>` with both attached.
 
-The build sets `versionCode` from the run number and signs with the committed
-`debug.keystore`. Because the key is stable and the version always rises, a new APK
-**updates an installed copy in place** — no uninstall needed.
+The build stamps `versionCode` with the number of minutes since a fixed epoch, so it rises
+with build time on CI and locally alike, and signs with the committed `debug.keystore`.
+Because the key is stable and the version always rises, a new APK **updates an installed
+copy in place** — no uninstall needed, and a local build can install over a CI one.
 
 ### Install on a phone
 

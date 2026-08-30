@@ -71,7 +71,12 @@ class AudioCaptureService : Service() {
     private val floorWin = ArrayDeque<Double>()
     private val floorWinMax = 300   // ~30s at ~10 reads/s
     private val floorLoPct = 0.15   // 15th percentile ≈ the quiet floor
-    private val floorMin = 0.001
+    // Lower bound on the estimated quiet floor. This only exists to stop a dead mic
+    // (all zeros) from making every ratio infinite; the silent-stream watchdog is the
+    // real guard for that now. It must sit BELOW any genuine room floor: measured on a
+    // Galaxy S21 the UNPROCESSED path idles at 2e-5 RMS (0.66 LSB), so the previous
+    // 0.001 clamped the baseline 50x above the signal and no episode could ever open.
+    private val floorMin = 0.000001
     private val floorMax = 0.05
     // open continuous-snore episode being merged
     private var epActive = false
@@ -104,6 +109,11 @@ class AudioCaptureService : Service() {
     private val snoreMergeGapMs = 700L
     private val maxEpisodeMs = 120_000L   // continuous sound beyond this is cut and classified
     private val minEpisodeDurSec = 0.35   // shorter than this is a breath blip, not a snore
+    // A snore is one exhalation, so it cannot run indefinitely: measured over a real night,
+    // genuine snores had a median duration of 2.0 s and a 90th percentile of 3.2 s. Sound
+    // that never drops below the gate for longer than this is a continuous source — a
+    // radio, a fan, a TV — which the spectral classifier alone was letting through.
+    private val maxSnoreDurSec = 4.0
     private val readIdleMs = 10L          // brief pause on an empty read, so we never hot-spin
     private val silentStreamAmp = 1e-6    // below this the stream is digital silence, not a quiet room
     private val silentReadsBeforeWarning = 600  // ~1 min of silence before telling the user
@@ -244,10 +254,17 @@ class AudioCaptureService : Service() {
         fun named(source: Int, name: String): AudioRecord? =
             buildRecorder(source)?.also { sourceName = name }
 
+        // Source preference, in order. UNPROCESSED is theoretically ideal (no AGC, no
+        // filtering) but on some devices it is also drastically lower gain: measured on a
+        // Galaxy S21 it idled at 0.66 LSB and peaked at 56 LSB across a whole night — 55 dB
+        // below full scale, leaving the spectral features measuring quantization noise.
+        // VOICE_RECOGNITION gives usable gain, and the effects it would normally apply are
+        // switched off explicitly below. Reorder this list to A/B the paths; the chosen one
+        // is recorded in the session log's "cfg" line.
         val recorder = try {
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
-                named(MediaRecorder.AudioSource.UNPROCESSED, "UNPROCESSED") else null)
-                ?: named(MediaRecorder.AudioSource.VOICE_RECOGNITION, "VOICE_RECOGNITION")
+            named(MediaRecorder.AudioSource.VOICE_RECOGNITION, "VOICE_RECOGNITION")
+                ?: (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+                    named(MediaRecorder.AudioSource.UNPROCESSED, "UNPROCESSED") else null)
                 ?: named(MediaRecorder.AudioSource.MIC, "MIC")
         } catch (e: SecurityException) {
             NocturnePlugin.emitError("Microphone permission denied")
@@ -358,7 +375,10 @@ class AudioCaptureService : Service() {
             if (lastSampleMs == 0L || now - lastSampleMs > 1000) {
                 lastSampleMs = now
                 NocturnePlugin.emitSample(elapsed, amp, level)
-                appendSessionEvent("{\"e\":\"sample\",\"t\":${"%.1f".format(Locale.US, elapsed)},\"amp\":${"%.5f".format(Locale.US, amp)},\"lvl\":$level}")
+                // Scientific notation: a quiet room on a low-gain path idles near 1e-5,
+                // where %.5f rounds everything to a single significant figure and hides
+                // exactly the detail needed to tell a tracking floor from a clamped one.
+                appendSessionEvent("{\"e\":\"sample\",\"t\":${"%.1f".format(Locale.US, elapsed)},\"amp\":${"%.3e".format(Locale.US, amp)},\"base\":${"%.3e".format(Locale.US, baseline)},\"lvl\":$level}")
             }
 
             // smart alarm: within the wake window, fire at a light-sleep moment;
@@ -512,15 +532,20 @@ class AudioCaptureService : Service() {
             record.reject = EpisodeLog.REASON_QUIET
         } else {
             // classify using the (possibly calibrated) per-user F0 band
-            val kind = if (epClf.frameCount > 0) epClf.classify(userF0Lo, userF0Hi) else "other"
+            val classified = if (epClf.frameCount > 0) epClf.classify(userF0Lo, userF0Hi) else "other"
             features = if (epClf.frameCount > 0) epClf.snapshot else null
+            // Continuous sound is not breathing, however snore-like its spectrum. It is
+            // still emitted as a sound so it stays visible rather than vanishing.
+            val tooLong = classified == "snore" && durSec > maxSnoreDurSec
+            val kind = if (tooLong) "other" else classified
             record.kind = kind
             val onset = record.onset
             if (kind == "snore") {
                 // snore-LIKE: hold as pending, confirm by rhythm against the last snore/pending
                 handleSnoreCandidate(onset, durSec, epPeak, writeClip(epClip, 0), epClf.dominantF0)
             } else {
-                record.reject = EpisodeLog.REASON_NOT_SNORE + kind
+                record.reject = if (tooLong) EpisodeLog.REASON_TOO_LONG
+                                else EpisodeLog.REASON_NOT_SNORE + kind
                 if (kind == "movement") movementCount++ else otherCount++
                 NocturnePlugin.emitSound(onset, durSec, epPeak, kind,
                     if (kind == "movement") movementCount else otherCount)

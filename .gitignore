@@ -12,3 +12,10 @@ dist/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Diagnostic captures pulled from the device
+night.jsonl
+prefs-backup.xml
+*.png
+!android-icons/**/*.png
+clips/

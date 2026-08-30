@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { patchGradle } from './patch-gradle.mjs';
 import { patchManifest } from './patch-manifest.mjs';
+import { patchTheme } from './patch-theme.mjs';
 
 const PACKAGE_DIR = 'android/app/src/main/java/com/nocturne/app';
 const RES_DIR = 'android/app/src/main/res';
@@ -51,9 +52,16 @@ function installLauncherIcon() {
   cpSync(ICONS_DIR, RES_DIR, { recursive: true });
 }
 
+// versionCode counts minutes since this epoch, so it rises with build time on CI and
+// locally alike. Deriving it from the CI run number instead meant local builds were
+// always versionCode 1 and Android refused to install them over a CI build.
+const VERSION_EPOCH_MS = Date.UTC(2025, 0, 1);
+const MINUTE_MS = 60000;
+
 function version() {
   const run = process.env.GITHUB_RUN_NUMBER;
-  return { code: run ?? '1', name: `1.0.${run ?? '0'}` };
+  const code = Math.floor((Date.now() - VERSION_EPOCH_MS) / MINUTE_MS);
+  return { code: String(code), name: run ? `1.0.${run}` : '1.0.0-dev' };
 }
 
 function main() {
@@ -78,6 +86,9 @@ function main() {
 
   step('Patching manifest');
   console.log(patchManifest(MANIFEST));
+
+  step('Patching theme');
+  console.log(patchTheme(`${RES_DIR}/values/styles.xml`));
 
   installLauncherIcon();
 

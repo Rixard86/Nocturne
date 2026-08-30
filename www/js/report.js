@@ -10,12 +10,19 @@ import { $, band, fmtMin } from './ui.js';
    ============================================================ */
 // Reopen a saved night: make it the current report and show it. Past nights carry a
 // persisted mini-timeline + hypnogram so the charts still render (raw samples are gone).
-function openNight(night){
+// Make a night the report's subject without navigating to it. Used on launch so the
+// Report tab holds last night instead of an empty state — previously that only happened
+// as a side effect of re-finalizing the night on every start, which also duplicated it.
+function loadNightIntoReport(night){
   S.current=night;
   // reset the player/selection state for the reopened night
   S._curEv=null; S._selT=null; S._playlist=null;
   if(typeof stopPlayback==='function') stopPlayback();
   renderReport();
+}
+
+function openNight(night){
+  loadNightIntoReport(night);
   switchView('report');
   requestAnimationFrame(()=>{ if($('tl'))drawTimelineReport(); if($('hypno'))drawHypnogram(); });
 }
@@ -87,6 +94,10 @@ function renderReport(){
           <button class="pnav" id="ppPrev">‹ Prev</button>
           <span class="pnav-label" id="ppIndex"></span>
           <button class="pnav" id="ppNext">Next ›</button>
+        </div>
+        <div class="player-enh" id="ppEnhWrap" style="display:none">
+          <button class="pnav on" id="ppEnh" aria-pressed="true">Clarify audio</button>
+          <span class="pnav-label">Cuts low rumble, lifts the level</span>
         </div>
       </div>
     </div>
@@ -166,4 +177,4 @@ function renderEvents(){
   });
 }
 
-export { emptyState, openNight, renderReport };
+export { emptyState, loadNightIntoReport, openNight, renderReport };

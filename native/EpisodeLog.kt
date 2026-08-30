@@ -20,6 +20,7 @@ object EpisodeLog {
     const val REASON_SHORT = "dur<min"
     const val REASON_QUIET = "peak<min"
     const val REASON_MAX_EPISODE = "maxEpisode"
+    const val REASON_TOO_LONG = "dur>max"
     const val REASON_NOT_SNORE = "class:"
 
     private fun num(value: Double, decimals: Int): String =
@@ -37,7 +38,7 @@ object EpisodeLog {
             .append(",\"t\":").append(num(episode.onset, 1))
             .append(",\"dur\":").append(num(episode.durSec, 2))
             .append(",\"peak\":").append(episode.peak)
-            .append(",\"base\":").append(num(episode.baseline, 5))
+            .append(",\"base\":").append(String.format(Locale.US, "%.3e", episode.baseline))
             .append(",\"frames\":").append(episode.frames)
             .append(",\"kind\":\"").append(episode.kind).append("\"")
             .append(",\"reject\":\"").append(episode.reject).append("\"")
