@@ -19,3 +19,8 @@ prefs-backup.xml
 *.png
 !android-icons/**/*.png
 clips/
+
+# Replay harness build output
+tools/replay/build/
+/night.wav
+/night.chunks

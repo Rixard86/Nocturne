@@ -16,9 +16,11 @@ import android.media.audiofx.NoiseSuppressor
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.app.NotificationCompat
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.io.FileOutputStream
@@ -49,6 +51,9 @@ class AudioCaptureService : Service() {
         const val EXTRA_ALARM_ENABLED = "alarm_enabled"
         const val EXTRA_ALARM_TIME = "alarm_time"
         const val EXTRA_ALARM_WINDOW = "alarm_window"
+        const val EXTRA_RAW_CAPTURE = "raw_capture"
+        const val SESSION_DIR_NAME = "nocturne_session"
+        const val SESSION_META_NAME = "session.json"
         @Volatile var running = false
         @Volatile var sensitivityRatio = 1.4   // auto wake-gate; updated live from the plugin
     }
@@ -57,63 +62,29 @@ class AudioCaptureService : Service() {
     @Volatile private var stopRequested = false
 
     // detection state
-    private var baseline = 0.012
-    private var startMs = 0L
-    private var calibrating = true
-    private var calibStart = 0L
-    private val calibSamples = ArrayList<Double>()
-
-    // Rolling quiet-floor estimate (replaces the one-sided EMA): the baseline is a low
-    // percentile of recent amplitudes, clamped. It adapts both up and down, so a bad 4s
-    // calibration can't pin the level scale, and it settles within ~the window length
-    // instead of creeping there over a minute. floorMin is deliberately low so low-gain
-    // capture paths (UNPROCESSED with no AGC) aren't clamped above their real floor.
-    private val floorWin = ArrayDeque<Double>()
-    private val floorWinMax = 300   // ~30s at ~10 reads/s
-    private val floorLoPct = 0.15   // 15th percentile ≈ the quiet floor
-    // Lower bound on the estimated quiet floor. This only exists to stop a dead mic
-    // (all zeros) from making every ratio infinite; the silent-stream watchdog is the
-    // real guard for that now. It must sit BELOW any genuine room floor: measured on a
-    // Galaxy S21 the UNPROCESSED path idles at 2e-5 RMS (0.66 LSB), so the previous
-    // 0.001 clamped the baseline 50x above the signal and no episode could ever open.
-    private val floorMin = 0.000001
-    private val floorMax = 0.05
-    // open continuous-snore episode being merged
-    private var epActive = false
-    private var epStartMs = 0L
-    private var epLastActiveMs = 0L
-    private var epPeak = 0
+    private val segmenter = EpisodeSegmenter()
+    private var startMs = 0L              // when the NIGHT began (survives a restart)
+    private var captureStartMs = 0L       // when this capture run began
+    private var sessionOffsetSec = 0.0    // seconds of the night already recorded before this run
+    private var resumedSession = false
+    private var resumedStartMs = 0L
+    private var wakeLock: PowerManager.WakeLock? = null
     // silence-based pause tracking (apnea = true silence after a snore episode)
     private var silentSinceMs = 0L
     private var lastEpLoudMs = 0L
     private var lastEpDurSec = 0.0
-    private val minEpisodePeak = 20   // must at some point reach ~2x the room floor to be a snore
-
-    // acoustic classification (snore / movement / other) of each episode
-    private val epClf = AcousticFeatures.EpisodeClassifier()
-    private val frameBuf = ArrayList<Double>(AcousticFeatures.FRAME_FFT * 3)
-    private val analysisFrame = DoubleArray(AcousticFeatures.FRAME_FFT)
-    private val frameFeat = AcousticFeatures.FrameFeatures()
-    private var decimRate = 44100 / AcousticFeatures.DECIM_FACTOR
     private var movementCount = 0
     private var otherCount = 0
     private var lastSampleMs = 0L
     private var snoreCount = 0
     private var pauseCount = 0
+    private val silenceFactor = 1.2       // amp below baseline x this counts as true silence
+    private val minPauseSec = 9.0
+    private val maxPauseSec = 60.0
+    private val minSnoreBeforePauseSec = 2.0
+    private val pauseSlackSec = 2.0       // the pause may start just before the episode ends
+    private val maxSincePauseSec = 20.0
 
-    private val calibrationMs = 4000L
-    // Quiet allowed inside one continuous episode. This must stay well BELOW the
-    // inter-breath pause (typically 1.5-3.5 s) or consecutive snores merge into a single
-    // episode, which then has nothing to pair with in the rhythm gate below and can never
-    // be confirmed. It only needs to bridge dips *within* one snore (< 0.3 s).
-    private val snoreMergeGapMs = 700L
-    private val maxEpisodeMs = 120_000L   // continuous sound beyond this is cut and classified
-    private val minEpisodeDurSec = 0.35   // shorter than this is a breath blip, not a snore
-    // A snore is one exhalation, so it cannot run indefinitely: measured over a real night,
-    // genuine snores had a median duration of 2.0 s and a 90th percentile of 3.2 s. Sound
-    // that never drops below the gate for longer than this is a continuous source — a
-    // radio, a fan, a TV — which the spectral classifier alone was letting through.
-    private val maxSnoreDurSec = 4.0
     private val readIdleMs = 10L          // brief pause on an empty read, so we never hot-spin
     private val silentStreamAmp = 1e-6    // below this the stream is digital silence, not a quiet room
     private val silentReadsBeforeWarning = 600  // ~1 min of silence before telling the user
@@ -148,13 +119,24 @@ class AudioCaptureService : Service() {
     private fun writeSessionMeta(active: Boolean) {
         val dir = sessionDir ?: return
         try {
-            File(dir, "session.json").writeText(
-                "{\"active\":$active,\"startMs\":$startMs,\"sensitivity\":$sensitivityRatio}")
+            File(dir, SESSION_META_NAME).writeText(
+                "{\"active\":$active,\"startMs\":$startMs,\"sensitivity\":$sensitivityRatio" +
+                    ",\"rawCapture\":$rawCaptureEnabled,\"alarmEnabled\":$alarmEnabled" +
+                    ",\"alarmDeadlineMs\":$alarmDeadlineMs,\"alarmWindowStartMs\":$alarmWindowStartMs" +
+                    ",\"alarmFired\":$alarmFired}")
         } catch (_: Exception) {}
     }
 
-    // audio clip capture for the current episode (real snore audio for playback)
-    private var epClip: ArrayList<Short>? = null
+    // debug tap: record the night to disk so it can be replayed through the detector
+    private var rawCaptureEnabled = false
+    private var rawCapture: RawCapture? = null
+
+    // audio clip capture for the current episode (real snore audio for playback).
+    // One reusable buffer with a write cursor: an ArrayList<Short> boxed every sample,
+    // roughly 441,000 objects per episode, for every blip above the gate all night.
+    private var clipBuf = ShortArray(0)
+    private var clipLen = 0
+    private var clipActive = false
     private var clipSampleRate = 44100
     private val clipMaxSamples get() = clipSampleRate * 10  // cap clip at ~10s
     private val clipRetentionMs = 7L * 24 * 60 * 60 * 1000  // keep clips ~7 days, then prune by age
@@ -181,22 +163,70 @@ class AudioCaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        sensitivityRatio = intent?.getDoubleExtra(EXTRA_SENSITIVITY, 1.4) ?: 1.4
-        // parse smart-alarm config
-        alarmEnabled = intent?.getBooleanExtra(EXTRA_ALARM_ENABLED, false) ?: false
-        if (alarmEnabled) {
-            val hhmm = intent?.getStringExtra(EXTRA_ALARM_TIME) ?: "07:00"
-            val windowMin = intent?.getIntExtra(EXTRA_ALARM_WINDOW, 30) ?: 30
-            computeAlarmWindow(hhmm, windowMin)
-            alarmFired = false
-        }
+        // A null Intent means the system restarted us after a process kill (START_STICKY).
+        // Taking the defaults there would silently change detection mid-night and turn the
+        // smart alarm and raw capture off, so the session's own settings are restored.
+        if (intent == null) restoreSession() else applyStartOptions(intent)
         startForegroundWithNotification()
         if (!running) {
             running = true
             stopRequested = false
-            thread = Thread { captureLoop() }.also { it.start() }
+            thread = Thread { runCapture() }.also { it.start() }
         }
         return START_STICKY
+    }
+
+    private fun applyStartOptions(intent: Intent) {
+        resumedSession = false
+        sensitivityRatio = intent.getDoubleExtra(EXTRA_SENSITIVITY, 1.4)
+        rawCaptureEnabled = intent.getBooleanExtra(EXTRA_RAW_CAPTURE, false)
+        // parse smart-alarm config
+        alarmEnabled = intent.getBooleanExtra(EXTRA_ALARM_ENABLED, false)
+        if (alarmEnabled) {
+            computeAlarmWindow(
+                intent.getStringExtra(EXTRA_ALARM_TIME) ?: "07:00",
+                intent.getIntExtra(EXTRA_ALARM_WINDOW, 30),
+            )
+            alarmFired = false
+        }
+    }
+
+    /**
+     * Reload a session the system interrupted, so the night continues instead of starting
+     * over. The alarm is restored as absolute times rather than re-parsed, which would roll
+     * the target to the next day.
+     */
+    private fun restoreSession() {
+        resumedSession = false
+        val meta = File(File(filesDir, SESSION_DIR_NAME), SESSION_META_NAME)
+        if (!meta.isFile) return
+        try {
+            val saved = JSONObject(meta.readText())
+            if (!saved.optBoolean("active", false)) return
+            val savedStart = saved.optLong("startMs", 0L)
+            if (savedStart <= 0L) return
+            resumedStartMs = savedStart
+            sensitivityRatio = saved.optDouble("sensitivity", 1.4)
+            rawCaptureEnabled = saved.optBoolean("rawCapture", false)
+            alarmEnabled = saved.optBoolean("alarmEnabled", false)
+            alarmDeadlineMs = saved.optLong("alarmDeadlineMs", 0L)
+            alarmWindowStartMs = saved.optLong("alarmWindowStartMs", 0L)
+            alarmFired = saved.optBoolean("alarmFired", false)
+            resumedSession = true
+        } catch (_: Exception) {}
+    }
+
+    /** Run the capture loop so an uncaught throw cannot kill the process without a trace. */
+    private fun runCapture() {
+        try {
+            captureLoop()
+        } catch (t: Throwable) {
+            NocturnePlugin.emitError("Capture stopped: ${t.javaClass.simpleName}")
+            appendSessionEvent("{\"e\":\"capture\",\"fatal\":${jsonStr(t.toString())}}")
+            writeSessionMeta(false)
+        } finally {
+            running = false
+        }
     }
 
     override fun onDestroy() {
@@ -278,9 +308,12 @@ class AudioCaptureService : Service() {
 
         val buffer = ShortArray(bufSize)
         silentReads = 0
-        startMs = System.currentTimeMillis()
-        calibStart = startMs
-        calibrating = true
+        captureStartMs = System.currentTimeMillis()
+        // On a resume the night keeps its original start, so episode onsets and the elapsed
+        // clock stay on one timeline across the interruption.
+        startMs = if (resumedSession) resumedStartMs else captureStartMs
+        sessionOffsetSec = (captureStartMs - startMs) / 1000.0
+        segmenter.begin(sampleRate / AcousticFeatures.DECIM_FACTOR, captureStartMs)
         clipSampleRate = sampleRate
         clipsDir = File(filesDir, "snore_clips").apply { mkdirs() }
         // Clips live in filesDir (not cacheDir) so they survive storage-pressure eviction
@@ -292,10 +325,28 @@ class AudioCaptureService : Service() {
         ringRate = sampleRate / AcousticFeatures.DECIM_FACTOR
         ring = ShortArray(ringRate * ringSeconds)
         ringPos = 0; ringFilled = 0
-        // begin a fresh persisted session for overnight re-attach
-        sessionDir = File(filesDir, "nocturne_session").apply { mkdirs() }
-        sessionLog = File(sessionDir, "events.jsonl").apply { runCatching { if (exists()) delete() } }
+        // the persisted session for overnight re-attach. On a resume the log is KEPT: deleting
+        // it would throw away the hours already recorded and restamp the night's start.
+        sessionDir = File(filesDir, SESSION_DIR_NAME).apply { mkdirs() }
+        sessionLog = File(sessionDir, "events.jsonl").apply {
+            if (!resumedSession) runCatching { if (exists()) delete() }
+        }
         writeSessionMeta(true)
+        if (resumedSession) {
+            appendSessionEvent("{\"e\":\"resume\",\"t\":${"%.1f".format(Locale.US, sessionOffsetSec)}}")
+        }
+        val recordingDir = sessionDir
+        rawCapture = if (rawCaptureEnabled && recordingDir != null) {
+            RawCapture(startMs, sensitivityRatio)
+                .apply { resume = resumedSession }
+                .takeIf { it.open(recordingDir, sampleRate / AcousticFeatures.DECIM_FACTOR) }
+        } else {
+            null
+        }
+        if (rawCaptureEnabled) {
+            appendSessionEvent("{\"e\":\"raw\",\"on\":${rawCapture != null}}")
+        }
+        acquireWakeLock()
 
         // AGC and noise suppression are tuned for speech: they flatten exactly the sustained
         // low-frequency energy the snore classifier keys on, and AGC lifts the measured floor
@@ -309,6 +360,8 @@ class AudioCaptureService : Service() {
         appendSessionEvent(EpisodeLog.config(sourceName, rates))
         NocturnePlugin.emitState("calibrating", 0.0, 0, 0, 0.0)
 
+        val chunk = EpisodeSegmenter.Chunk()
+        try {
         while (!stopRequested) {
             val read = recorder.read(buffer, 0, buffer.size)
             if (read < 0) {
@@ -320,8 +373,6 @@ class AudioCaptureService : Service() {
                 break
             }
             if (read == 0) { Thread.sleep(readIdleMs); continue }
-            val amp = rms(buffer, read)
-            trackSilentStream(amp)
             val now = System.currentTimeMillis()
 
             // morning safety net: a recording left running for 12h+ auto-stops so it
@@ -329,62 +380,43 @@ class AudioCaptureService : Service() {
             // (The state event is emitted AFTER the post-loop flush, so the final
             // episode/pause events reach the UI before it tears down its listeners.)
             if (now - startMs > maxSessionMs) break
-            if (calibrating) {
-                calibSamples.add(amp)
-                val leftSec = max(0L, calibrationMs - (now - calibStart)) / 1000.0
-                NocturnePlugin.emitCalibrating(amp, leftSec)
-                if (now - calibStart >= calibrationMs) {
-                    val sorted = calibSamples.sorted()
-                    val med = if (sorted.isEmpty()) 0.012 else sorted[sorted.size / 2]
-                    baseline = max(floorMin, med)
-                    // seed the rolling floor with the calibration samples so it starts
-                    // from measured room tone and adapts from there.
-                    floorWin.clear(); floorWin.addAll(calibSamples)
-                    while (floorWin.size > floorWinMax) floorWin.removeFirst()
-                    calibrating = false
-                    NocturnePlugin.emitState("listening", amp, snoreCount, pauseCount, baseline)
+
+            val snoreRatio = sensitivityRatio
+            segmenter.sensitivityRatio = snoreRatio
+            chunk.samples = buffer
+            chunk.length = read
+            chunk.atMs = now
+            chunk.amp = rms(buffer, read)
+            rawCapture?.append(chunk)
+            val wasActive = segmenter.active
+            val reading = segmenter.accept(chunk)
+            trackSilentStream(reading.amp)
+
+            if (reading.calibrating) {
+                NocturnePlugin.emitCalibrating(reading.amp, reading.calibLeftSec)
+                if (reading.calibrationComplete) {
+                    NocturnePlugin.emitState("listening", reading.amp, snoreCount, pauseCount, reading.baseline)
                 }
                 continue
             }
 
-            // adaptive quiet floor: a low percentile of a rolling window, clamped. Tracks
-            // the true room floor up or down and can't be pinned by a bad calibration.
-            floorWin.addLast(amp)
-            while (floorWin.size > floorWinMax) floorWin.removeFirst()
-            val fsorted = floorWin.sorted()
-            baseline = fsorted[((fsorted.size - 1) * floorLoPct).toInt()].coerceIn(floorMin, floorMax)
-            val ratio = amp / max(baseline, 0.0001)
-            val level = soundLevel(amp)
             val elapsed = (now - startMs) / 1000.0
-
-            // feed the rolling ring buffer with decimated audio (block-mean by DECIM_FACTOR)
-            if (ring.isNotEmpty()) {
-                var i = 0
-                val f = AcousticFeatures.DECIM_FACTOR
-                while (i + f <= read) {
-                    var s = 0
-                    for (k in 0 until f) s += buffer[i + k]
-                    ring[ringPos] = (s / f).toShort()
-                    ringPos = (ringPos + 1) % ring.size
-                    if (ringFilled < ring.size) ringFilled++
-                    i += f
-                }
-            }
+            feedRing(buffer, read)
 
             // downsampled ~1s sample for the timeline
             if (lastSampleMs == 0L || now - lastSampleMs > 1000) {
                 lastSampleMs = now
-                NocturnePlugin.emitSample(elapsed, amp, level)
+                NocturnePlugin.emitSample(elapsed, reading.amp, reading.level)
                 // Scientific notation: a quiet room on a low-gain path idles near 1e-5,
                 // where %.5f rounds everything to a single significant figure and hides
                 // exactly the detail needed to tell a tracking floor from a clamped one.
-                appendSessionEvent("{\"e\":\"sample\",\"t\":${"%.1f".format(Locale.US, elapsed)},\"amp\":${"%.3e".format(Locale.US, amp)},\"base\":${"%.3e".format(Locale.US, baseline)},\"lvl\":$level}")
+                appendSessionEvent("{\"e\":\"sample\",\"t\":${"%.1f".format(Locale.US, elapsed)},\"amp\":${"%.3e".format(Locale.US, reading.amp)},\"base\":${"%.3e".format(Locale.US, reading.baseline)},\"lvl\":${reading.level}}")
             }
 
             // smart alarm: within the wake window, fire at a light-sleep moment;
             // at the hard deadline, fire regardless.
             if (alarmEnabled && !alarmFired) {
-                recentLevels.addLast(level)
+                recentLevels.addLast(reading.level)
                 while (recentLevels.size > 30) recentLevels.removeFirst()  // ~30 reads window
                 val past = System.currentTimeMillis()
                 if (past >= alarmDeadlineMs) {
@@ -394,103 +426,34 @@ class AudioCaptureService : Service() {
                 }
             }
 
-            val snoreRatio = sensitivityRatio
-            if (ratio > snoreRatio) {
-                if (!epActive) {
-                    epActive = true; epStartMs = now; epLastActiveMs = now; epPeak = level
-                    epClip = ArrayList(clipSampleRate * 4)   // start a fresh clip buffer
-                    epClf.reset(); frameBuf.clear()          // fresh acoustic analysis
-                } else {
-                    epLastActiveMs = now
-                    if (level > epPeak) epPeak = level
-                }
-            }
-            // while an episode is open, accumulate its audio (capped) + analyse frames
-            val clip = epClip
-            if (epActive && clip != null && clip.size < clipMaxSamples) {
-                val room = clipMaxSamples - clip.size
-                val n = min(read, room)
-                for (i in 0 until n) clip.add(buffer[i])
-            }
-            if (epActive) {
-                // decimate this chunk and consume full FFT frames for classification
-                decimRate = AcousticFeatures.decimateInto(buffer, read, frameBuf, sampleRate)
-                while (frameBuf.size >= AcousticFeatures.FRAME_FFT) {
-                    for (i in 0 until AcousticFeatures.FRAME_FFT) analysisFrame[i] = frameBuf[i]
-                    // drop the consumed frame in one shift (not one element at a time)
-                    frameBuf.subList(0, AcousticFeatures.FRAME_FFT).clear()
-                    AcousticFeatures.analyzeFrame(analysisFrame, decimRate, frameFeat)
-                    epClf.add(frameFeat)
-                }
-            }
-            // finalize an open episode only after continuous quiet beyond the merge gap
-            if (epActive && (now - epLastActiveMs) >= snoreMergeGapMs) {
-                finalizeEpisode(false)
-            }
-            // Length guard for a sound that stays continuously loud (a fan or AC turning
-            // on). It is classified and emitted rather than discarded — a long sound is
-            // still evidence, and silently deleting it was hiding real snoring. The floor
-            // needs no rebasing here: it is recomputed from the percentile window every
-            // pass, so any sustained rise is already tracked.
-            if (epActive && (now - epStartMs) > maxEpisodeMs) {
-                finalizeEpisode(true)
-            }
+            if (reading.episodeStarted) startClip()
+            if (wasActive || reading.episodeStarted) appendClip(buffer, read)
+            reading.finalized?.let { handleEpisode(it) }
+            trackPause(reading, now)
 
-            // breathing-pause / apnea flag — near-TOTAL silence (well below breathing
-            // sounds), 9-60s long, following a genuine snore episode (>=2s). Measured
-            // when sound resumes so the recorded duration is the real gap length.
-            // Quiet breathing stays above the silence floor and no longer counts.
-            val silent = amp < baseline * 1.2
-            if (silent) {
-                if (silentSinceMs == 0L) silentSinceMs = now
-            } else {
-                if (silentSinceMs != 0L) {
-                    val gap = (now - silentSinceMs) / 1000.0
-                    val sinceEp = if (lastEpLoudMs != 0L) (silentSinceMs - lastEpLoudMs) / 1000.0 else Double.MAX_VALUE
-                    if (gap in 9.0..60.0 && lastEpDurSec >= 2.0 && sinceEp in -2.0..20.0) {
-                        pauseCount++
-                        // save context audio: from ~3s before the silence began, through
-                        // the silence, to now (the gasp/resumption). Read from the ring.
-                        val path = writePauseClip(silentSinceMs, now)
-                        val pt = (silentSinceMs - startMs) / 1000.0
-                        NocturnePlugin.emitPause(pt, gap, pauseCount, path)
-                        appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
-                    }
-                    silentSinceMs = 0L
-                }
-            }
-
-            NocturnePlugin.emitLevel(level, ratio > snoreRatio, elapsed, baseline)
+            NocturnePlugin.emitLevel(reading.level, reading.ratio > snoreRatio, elapsed, reading.baseline)
         }
 
         // flush a snore episode still open when recording stops
-        if (epActive) {
-            finalizeEpisode(false)
-        }
+        segmenter.flush()?.let { handleEpisode(it) }
         // flush a pause still open at stop (silence continued to the end)
-        if (silentSinceMs != 0L) {
-            val nowStop = System.currentTimeMillis()
-            val gap = (nowStop - silentSinceMs) / 1000.0
-            val sinceEp = if (lastEpLoudMs != 0L) (silentSinceMs - lastEpLoudMs) / 1000.0 else Double.MAX_VALUE
-            if (gap in 9.0..60.0 && lastEpDurSec >= 2.0 && sinceEp in -2.0..20.0) {
-                pauseCount++
-                val path = writePauseClip(silentSinceMs, nowStop)
-                val pt = (silentSinceMs - startMs) / 1000.0
-                NocturnePlugin.emitPause(pt, gap, pauseCount, path)
-                appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
-            }
-            silentSinceMs = 0L
+        if (silentSinceMs != 0L) closePause(System.currentTimeMillis())
+        } finally {
+            // always run: a throw here would otherwise leak the recorder and the wake lock,
+            // and leave the recording without its patched header
+            rawCapture?.close()
+            rawCapture = null
+            try { recorder.stop() } catch (_: Exception) {}
+            recorder.release()
+            releaseWakeLock()
         }
-
-        try { recorder.stop() } catch (_: Exception) {}
-        recorder.release()
 
         // if we exited the loop on our own (12h cap) rather than a user stop, mark the
         // session ended and shut down — emitted AFTER the flush so no events are lost.
         if (!stopRequested) {
             writeSessionMeta(false)
             running = false
-            NocturnePlugin.emitState("auto-stopped", 0.0, snoreCount, pauseCount, baseline)
+            NocturnePlugin.emitState("auto-stopped", 0.0, snoreCount, pauseCount, segmenter.currentBaseline)
             stopSelf()
         }
     }
@@ -505,143 +468,188 @@ class AudioCaptureService : Service() {
      * episode arrives close in time; matching onsets 2-6 s apart confirm BOTH. Snore F0
      * is also accumulated to calibrate the classifier to this user's own pitch.
      */
-    /** Build the diagnostic record for the episode being finalized. */
-    private fun episodeRecord(durSec: Double): EpisodeLog.EpisodeRecord {
-        val record = EpisodeLog.EpisodeRecord()
-        record.onset = (epStartMs - startMs) / 1000.0
-        record.durSec = durSec
-        record.peak = epPeak
-        record.baseline = baseline
-        record.frames = epClf.frameCount
-        return record
+    private fun startClip() {
+        if (clipBuf.size < clipMaxSamples) clipBuf = ShortArray(clipMaxSamples)
+        clipLen = 0
+        clipActive = true
+    }
+
+    /** Accumulate the open episode's full-rate audio, for snore playback. */
+    private fun appendClip(buf: ShortArray, len: Int) {
+        if (!clipActive || clipLen >= clipMaxSamples) return
+        val take = min(len, clipMaxSamples - clipLen)
+        System.arraycopy(buf, 0, clipBuf, clipLen, take)
+        clipLen += take
+    }
+
+    private fun rms(buf: ShortArray, len: Int): Double {
+        var sum = 0.0
+        for (i in 0 until len) {
+            val v = buf[i] / 32768.0
+            sum += v * v
+        }
+        return sqrt(sum / len)
     }
 
     /**
-     * Close the open episode: classify it, route it, and always log why it was or wasn't
-     * accepted. `forced` marks an episode cut short by the max-length guard rather than by
-     * a genuine drop to quiet.
+     * Hold the CPU awake for the session. AudioFlinger usually keeps it up on its own, so
+     * this is belt-and-braces — but the permission is declared, and a stalled night costs
+     * the whole night. The timeout means a leaked lock cannot drain the battery all day.
      */
-    private fun finalizeEpisode(forced: Boolean) {
-        val durSec = (epLastActiveMs - epStartMs) / 1000.0
-        val record = episodeRecord(durSec)
-        var features: AcousticFeatures.EpisodeClassifier.Snapshot? = null
+    private fun acquireWakeLock() {
+        if (wakeLock != null) return
+        try {
+            val power = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nocturne:capture").apply {
+                setReferenceCounted(false)
+                acquire(maxSessionMs)
+            }
+        } catch (_: Exception) {}
+    }
 
-        if (durSec <= minEpisodeDurSec) {
+    private fun releaseWakeLock() {
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
+        wakeLock = null
+    }
+
+    /** Feed the rolling ring buffer with decimated audio, for breathing-pause context. */
+    private fun feedRing(buf: ShortArray, len: Int) {
+        if (ring.isEmpty()) return
+        var i = 0
+        val factor = AcousticFeatures.DECIM_FACTOR
+        while (i + factor <= len) {
+            var sum = 0
+            for (k in 0 until factor) sum += buf[i + k]
+            ring[ringPos] = (sum / factor).toShort()
+            ringPos = (ringPos + 1) % ring.size
+            if (ringFilled < ring.size) ringFilled++
+            i += factor
+        }
+    }
+
+    /**
+     * Breathing-pause / apnea flag — near-TOTAL silence (well below breathing sounds),
+     * 9-60s long, following a genuine snore episode (>=2s). Measured when sound resumes so
+     * the recorded duration is the real gap length. Quiet breathing stays above the silence
+     * floor and no longer counts.
+     */
+    private fun trackPause(reading: EpisodeSegmenter.Reading, atMs: Long) {
+        if (reading.amp < reading.baseline * silenceFactor) {
+            if (silentSinceMs == 0L) silentSinceMs = atMs
+            return
+        }
+        if (silentSinceMs != 0L) closePause(atMs)
+    }
+
+    private fun closePause(atMs: Long) {
+        val gap = (atMs - silentSinceMs) / 1000.0
+        val sinceEp = if (lastEpLoudMs != 0L) (silentSinceMs - lastEpLoudMs) / 1000.0 else Double.MAX_VALUE
+        if (gap in minPauseSec..maxPauseSec && lastEpDurSec >= minSnoreBeforePauseSec &&
+            sinceEp in -pauseSlackSec..maxSincePauseSec) {
+            pauseCount++
+            // save context audio: from ~3s before the silence began, through the silence,
+            // to now (the gasp/resumption). Read from the ring.
+            val path = writePauseClip(silentSinceMs, atMs)
+            val pt = (silentSinceMs - startMs) / 1000.0
+            NocturnePlugin.emitPause(pt, gap, pauseCount, path)
+            appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
+        }
+        silentSinceMs = 0L
+    }
+
+    /**
+     * Close a finalized episode: gate it, classify it, route it, and always log why it was
+     * or wasn't accepted.
+     */
+    private fun handleEpisode(episode: EpisodeSegmenter.Episode) {
+        val record = EpisodeLog.EpisodeRecord()
+        record.onset = episode.onset + sessionOffsetSec
+        record.durSec = episode.durSec
+        record.peak = episode.peak
+        record.baseline = episode.baseline
+        record.frames = episode.frames
+        var features: SnoreVerdict.Features? = null
+
+        if (episode.durSec <= EpisodeSegmenter.MIN_EPISODE_DUR_SEC) {
             record.reject = EpisodeLog.REASON_SHORT
-        } else if (epPeak < minEpisodePeak) {
+        } else if (episode.peak < EpisodeSegmenter.MIN_EPISODE_PEAK) {
             record.reject = EpisodeLog.REASON_QUIET
         } else {
             // classify using the (possibly calibrated) per-user F0 band
-            val classified = if (epClf.frameCount > 0) epClf.classify(userF0Lo, userF0Hi) else "other"
-            features = if (epClf.frameCount > 0) epClf.snapshot else null
-            // Continuous sound is not breathing, however snore-like its spectrum. It is
-            // still emitted as a sound so it stays visible rather than vanishing.
-            val tooLong = classified == "snore" && durSec > maxSnoreDurSec
-            val kind = if (tooLong) "other" else classified
-            record.kind = kind
-            val onset = record.onset
-            if (kind == "snore") {
-                // snore-LIKE: hold as pending, confirm by rhythm against the last snore/pending
-                handleSnoreCandidate(onset, durSec, epPeak, writeClip(epClip, 0), epClf.dominantF0)
-            } else {
-                record.reject = if (tooLong) EpisodeLog.REASON_TOO_LONG
-                                else EpisodeLog.REASON_NOT_SNORE + kind
-                if (kind == "movement") movementCount++ else otherCount++
-                NocturnePlugin.emitSound(onset, durSec, epPeak, kind,
-                    if (kind == "movement") movementCount else otherCount)
-                appendSessionEvent("{\"e\":\"sound\",\"t\":${"%.1f".format(Locale.US, onset)},\"dur\":${"%.2f".format(Locale.US, durSec)},\"lvl\":$epPeak,\"kind\":\"$kind\"}")
-            }
+            features = episode.features
+            routeEpisode(record, features)
         }
-        if (forced) record.reject = EpisodeLog.REASON_MAX_EPISODE
+        if (episode.forced) record.reject = EpisodeLog.REASON_MAX_EPISODE
         appendSessionEvent(EpisodeLog.episode(record, features))
-
-        epActive = false; epClip = null
-        epClf.reset(); frameBuf.clear()
+        clipActive = false
+        clipLen = 0
     }
 
-    // ---- rhythm confirmation + F0 calibration state ----
-    private var pendingOnset = -1.0
-    private var pendingDur = 0.0
-    private var pendingPeak = 0
-    private var pendingClip = ""
-    private var pendingF0 = 0.0
-    private var lastConfirmedOnset = -100.0
-    private val f0Samples = ArrayList<Double>()
-    private var userF0Lo = 60.0    // calibrated per user; starts at the general snore band
-    private var userF0Hi = 320.0
-    // Onset-to-onset gap between consecutive snores in a train. The upper bound sets the
-    // slowest breathing rate that can be confirmed: 8.0 s covers down to 7.5 breaths/min,
-    // and with the 0.7 s merge gap the lower bound reaches 40 breaths/min — the whole
-    // physiological range. (At the previous 4 s merge gap the achievable range collapsed
-    // to 8.6-13.8 breaths/min, below normal adult sleeping rates, so almost nothing
-    // could ever be confirmed.)
-    private val snoreTrainMin = 1.5   // s — min gap between snores in a train
-    private val snoreTrainMax = 8.0   // s — max gap
-
-    /** Record which branch the rhythm gate took, so a night of misses is diagnosable. */
-    private fun logRhythm(onset: Double, outcome: String) {
-        val gaps = EpisodeLog.RhythmGaps(
-            onset - lastConfirmedOnset,
-            if (pendingOnset >= 0) onset - pendingOnset else -1.0
-        )
-        appendSessionEvent(EpisodeLog.rhythm(onset, gaps, outcome))
-    }
-
-    private fun handleSnoreCandidate(onset: Double, dur: Double, peak: Int, clip: String, f0: Double) {
-        // does this candidate form a train with the last confirmed snore?
-        val gapFromConfirmed = onset - lastConfirmedOnset
-        if (gapFromConfirmed in snoreTrainMin..snoreTrainMax) {
-            logRhythm(onset, "confirmed-by-train")
-            emitConfirmedSnore(onset, dur, peak, clip, f0)
+    /** Take the verdict for a classified episode and send it down the snore or sound path. */
+    private fun routeEpisode(record: EpisodeLog.EpisodeRecord, features: SnoreVerdict.Features?) {
+        record.kind = verdictFor(record, features)
+        // Continuous sound is not breathing, however snore-like its spectrum. It is
+        // still emitted as a sound so it stays visible rather than vanishing.
+        val tooLong = record.cappedForDuration
+        if (record.kind == SnoreVerdict.SNORE) {
+            // snore-LIKE: hold as pending, confirm by rhythm against the last snore/pending
+            handleSnoreCandidate(snoreCandidate(record, writeClip()))
             return
         }
-        // otherwise, try to pair with a held pending candidate
-        if (pendingOnset >= 0) {
-            val gap = onset - pendingOnset
-            if (gap in snoreTrainMin..snoreTrainMax) {
-                // a train of two — confirm the pending one, then this one
-                logRhythm(onset, "confirmed-pair")
-                emitConfirmedSnore(pendingOnset, pendingDur, pendingPeak, pendingClip, pendingF0)
-                emitConfirmedSnore(onset, dur, peak, clip, f0)
-                clearPending()
-                return
-            } else {
-                // the old pending was isolated → it was noise, not a snore. Drop it.
-                logRhythm(onset, "pending-dropped")
-                clearPending()
-            }
-        } else {
-            logRhythm(onset, "held-pending")
-        }
-        // hold this one as the new pending candidate
-        pendingOnset = onset; pendingDur = dur; pendingPeak = peak; pendingClip = clip; pendingF0 = f0
+        record.reject = if (tooLong) EpisodeLog.REASON_TOO_LONG
+                        else EpisodeLog.REASON_NOT_SNORE + record.kind
+        if (record.kind == SnoreVerdict.MOVEMENT) movementCount++ else otherCount++
+        NocturnePlugin.emitSound(record.onset, record.durSec, record.peak, record.kind,
+            if (record.kind == SnoreVerdict.MOVEMENT) movementCount else otherCount)
+        appendSessionEvent("{\"e\":\"sound\",\"t\":${"%.1f".format(Locale.US, record.onset)},\"dur\":${"%.2f".format(Locale.US, record.durSec)},\"lvl\":${record.peak},\"kind\":\"${record.kind}\"}")
     }
 
-    private fun emitConfirmedSnore(onset: Double, dur: Double, peak: Int, clip: String, f0: Double) {
+    /** Decide the episode, recording the gates on it, and apply the duration cap. */
+    private fun verdictFor(record: EpisodeLog.EpisodeRecord, features: SnoreVerdict.Features?): String {
+        if (features == null) return SnoreVerdict.OTHER
+        val decision = SnoreVerdict.decide(features, confirmer.band)
+        record.lowDominant = decision.lowDominant
+        record.twoPeak = decision.twoPeak
+        record.steadyNoise = decision.steadyNoise
+        record.snoreScore = decision.snoreScore
+        record.movementScore = decision.movementScore
+        record.meanF0 = features.meanF0
+        record.cappedForDuration = SnoreVerdict.exceedsSnoreDuration(decision.kind, record.durSec)
+        return if (record.cappedForDuration) SnoreVerdict.OTHER else decision.kind
+    }
+
+    // ---- rhythm confirmation + F0 calibration ----
+    private val confirmer = SnoreConfirmer()
+
+    /** Record which branch the rhythm gate took, so a night of misses is diagnosable. */
+    private fun logRhythm(candidate: SnoreConfirmer.Candidate, outcome: SnoreConfirmer.Outcome) {
+        val gaps = EpisodeLog.RhythmGaps(outcome.gapFromConfirmed, outcome.gapFromPending)
+        appendSessionEvent(EpisodeLog.rhythm(candidate.onset, gaps, outcome.branch))
+    }
+
+    /** Package the episode being finalized as a candidate for the rhythm gate. */
+    private fun snoreCandidate(record: EpisodeLog.EpisodeRecord, clipPath: String): SnoreConfirmer.Candidate {
+        val candidate = SnoreConfirmer.Candidate()
+        candidate.onset = record.onset
+        candidate.durSec = record.durSec
+        candidate.peak = record.peak
+        candidate.clip = clipPath
+        candidate.f0 = record.meanF0
+        return candidate
+    }
+
+    private fun handleSnoreCandidate(candidate: SnoreConfirmer.Candidate) {
+        val outcome = confirmer.offer(candidate)
+        logRhythm(candidate, outcome)
+        for (snore in outcome.confirmed) emitConfirmedSnore(snore)
+    }
+
+    private fun emitConfirmedSnore(snore: SnoreConfirmer.Candidate) {
         snoreCount++
-        NocturnePlugin.emitSnore(onset, dur, peak, snoreCount, clip)
-        appendSessionEvent("{\"e\":\"snore\",\"t\":${"%.1f".format(Locale.US, onset)},\"dur\":${"%.2f".format(Locale.US, dur)},\"lvl\":$peak,\"count\":$snoreCount,\"clip\":${jsonStr(clip)}}")
-        lastConfirmedOnset = onset
-        lastEpLoudMs = startMs + (onset * 1000).toLong() + (dur * 1000).toLong()
-        lastEpDurSec = dur
-        // accumulate F0 for per-user calibration
-        if (f0 in 50.0..400.0) {
-            f0Samples.add(f0)
-            if (f0Samples.size >= 8) recalibrateF0()
-        }
-    }
-
-    private fun clearPending() { pendingOnset = -1.0; pendingClip = "" }
-
-    /** Narrow the accepted snore-F0 band to this user's own pitch (median ± spread). */
-    private fun recalibrateF0() {
-        val sorted = f0Samples.sorted()
-        val median = sorted[sorted.size / 2]
-        // spread: keep a band around the user's median but never absurdly tight
-        userF0Lo = max(50.0, median - 90.0)
-        userF0Hi = min(400.0, median + 120.0)
-        // cap memory
-        if (f0Samples.size > 200) f0Samples.subList(0, f0Samples.size - 200).clear()
+        NocturnePlugin.emitSnore(snore.onset, snore.durSec, snore.peak, snoreCount, snore.clip)
+        appendSessionEvent("{\"e\":\"snore\",\"t\":${"%.1f".format(Locale.US, snore.onset)},\"dur\":${"%.2f".format(Locale.US, snore.durSec)},\"lvl\":${snore.peak},\"count\":$snoreCount,\"clip\":${jsonStr(snore.clip)}}")
+        lastEpLoudMs = startMs + (snore.onset * 1000).toLong() + (snore.durSec * 1000).toLong()
+        lastEpDurSec = snore.durSec
     }
 
     /**
@@ -678,21 +686,7 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun rms(buf: ShortArray, len: Int): Double {
-        var sum = 0.0
-        for (i in 0 until len) {
-            val v = buf[i] / 32768.0
-            sum += v * v
-        }
-        return sqrt(sum / len)
-    }
 
-    private fun soundLevel(amp: Double): Int {
-        val b = if (baseline > 0) baseline else 0.01
-        val ratio = max(1.0, amp / b)
-        val lvl = log2(ratio) / log2(14.0) * 100.0
-        return max(0.0, min(100.0, lvl)).toInt()
-    }
 
     /** Compute the absolute wake window [start, deadline] from an HH:MM target + window minutes. */
     private fun computeAlarmWindow(hhmm: String, windowMin: Int) {
@@ -774,11 +768,9 @@ class AudioCaptureService : Service() {
     }
 
     /** Write an episode's PCM samples (at clipSampleRate) to a WAV; returns path or "". */
-    private fun writeClip(samples: ArrayList<Short>?, index: Int): String {
-        if (samples == null || samples.isEmpty()) return ""
-        val arr = ShortArray(samples.size)
-        for (i in samples.indices) arr[i] = samples[i]
-        return writeWav(arr, clipSampleRate, "snore_${System.currentTimeMillis()}_$index.wav")
+    private fun writeClip(): String {
+        if (!clipActive || clipLen == 0) return ""
+        return writeWav(clipBuf.copyOf(clipLen), clipSampleRate, "snore_${System.currentTimeMillis()}_0.wav")
     }
 
     /**

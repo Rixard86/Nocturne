@@ -16,7 +16,7 @@ import java.io.File
  * Bridge between the web UI and the native AudioCaptureService.
  *
  * JS methods:
- *   start({ sensitivity })      -> begins the foreground service + capture
+ *   start({ sensitivity, rawCapture }) -> begins the foreground service + capture
  *   stop()                      -> stops the service
  *   setSensitivity({ ratio })   -> updates detection ratio live
  *   isRunning()                 -> { running }
@@ -91,6 +91,7 @@ class NocturnePlugin : Plugin() {
         AudioCaptureService.sensitivityRatio = ratio
         val intent = Intent(context, AudioCaptureService::class.java)
         intent.putExtra(AudioCaptureService.EXTRA_SENSITIVITY, ratio)
+        intent.putExtra(AudioCaptureService.EXTRA_RAW_CAPTURE, call.getBoolean("rawCapture", false) ?: false)
         // smart alarm parameters (optional)
         if (call.getBoolean("alarmEnabled", false) == true) {
             intent.putExtra(AudioCaptureService.EXTRA_ALARM_ENABLED, true)

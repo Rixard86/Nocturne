@@ -1,6 +1,6 @@
 import { drawHypnogram, drawTimelineReport } from './charts.js';
 import { hideBoot, setBootStatus, startBootFailsafe } from './boot.js';
-import { wireDebugToggle } from './debug.js';
+import { wireDebugToggle, wireRawCaptureToggle } from './debug.js';
 // Side-effect only: wires the sample-night button. Exports nothing, so it must be
 // imported explicitly or it drops out of the module graph entirely.
 import './demo.js';
@@ -101,6 +101,7 @@ function showLastNight(){
 function init(){
   startBootFailsafe();
   wireDebugToggle();
+  wireRawCaptureToggle();
   window.addEventListener('resize',()=>{sizeHalo(); if(S.current&&$('tl'))drawTimelineReport(); if(S.current&&$('hypno'))drawHypnogram(); if($('trend'))renderTrends();});
   // Hide the boot screen once BOTH restores settle — and whether or not they threw,
   // so a startup failure shows the app rather than stranding the user on the overlay.

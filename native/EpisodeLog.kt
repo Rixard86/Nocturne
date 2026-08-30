@@ -32,7 +32,7 @@ object EpisodeLog {
      * One line per finalized episode, including those dropped before classification.
      * `kind` is the classifier verdict, or null when the episode never reached it.
      */
-    fun episode(episode: EpisodeRecord, features: AcousticFeatures.EpisodeClassifier.Snapshot?): String {
+    fun episode(episode: EpisodeRecord, features: SnoreVerdict.Features?): String {
         val head = StringBuilder()
             .append("{\"e\":\"epi\"")
             .append(",\"t\":").append(num(episode.onset, 1))
@@ -55,11 +55,11 @@ object EpisodeLog {
             .append(",\"p200\":").append(num(features.peak200, 3))
             .append(",\"p1k\":").append(num(features.peak1k, 3))
             .append(",\"eVar\":").append(num(features.eVar, 4))
-            .append(",\"lowDom\":").append(bool(features.lowDominant))
-            .append(",\"twoPeak\":").append(bool(features.twoPeak))
-            .append(",\"steady\":").append(bool(features.steadyNoise))
-            .append(",\"sScore\":").append(features.snoreScore)
-            .append(",\"mScore\":").append(features.movementScore)
+            .append(",\"lowDom\":").append(bool(episode.lowDominant))
+            .append(",\"twoPeak\":").append(bool(episode.twoPeak))
+            .append(",\"steady\":").append(bool(episode.steadyNoise))
+            .append(",\"sScore\":").append(episode.snoreScore)
+            .append(",\"mScore\":").append(episode.movementScore)
             .append("}")
             .toString()
     }
@@ -93,6 +93,13 @@ object EpisodeLog {
         var frames = 0
         var kind = "none"
         var reject = REASON_NONE
+        var lowDominant = false
+        var twoPeak = false
+        var steadyNoise = false
+        var snoreScore = 0
+        var movementScore = 0
+        var meanF0 = 0.0
+        var cappedForDuration = false
     }
 
     /** Onset gaps considered by the rhythm gate, in seconds. */

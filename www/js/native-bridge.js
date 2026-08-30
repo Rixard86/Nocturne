@@ -93,7 +93,7 @@ async function startNative(plugin){
   animate();
 
   try{
-    const opts={ sensitivity: snoreRatio() };
+    const opts={ sensitivity: snoreRatio(), rawCapture: !!S._rawCapture };
     if(S.alarm && S.alarm.on){
       opts.alarmEnabled=true;
       opts.alarmTime=S.alarm.time;       // "HH:MM"

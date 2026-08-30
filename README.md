@@ -100,7 +100,8 @@ That regenerates and patches `android/`, then runs `assembleDebug`. The APK land
 |--------|------|
 | `npm run dev` | Static server for `www/` on port 5173 |
 | `npm run deploy` | Prepare, build, and install to the phone — the usual one |
-| `npm run pull:night` | Pull last night's diagnostic log and summarise it |
+| `npm run pull:night` | Pull last night's diagnostic log and summarise it (`-- --audio` also pulls the raw recording) |
+| `npm run replay` | Replay a recorded night through the detector off-device |
 | `npm run prepare:android` | Generate + patch the native project (no compile) |
 | `npm run build:android` | Prepare, then build the debug APK |
 | `npm run install:android` | Install the built APK |
@@ -124,6 +125,41 @@ before recording again.
 
 Editing anything under `www/` only needs `npm run sync` before rebuilding — a full
 `prepare:android` is only required after changing `native/`, the icons, or the config.
+
+### Replaying a night off-device
+
+`npm run replay -- <night.jsonl>` pushes a recorded night back through the detector on the
+desktop and reports what it decided, so a threshold change can be measured against real
+data instead of guessed at. It compiles the *same* Kotlin the app builds from — the
+Android-free detector sources — so the phone and the harness can never drift apart. It
+exits non-zero when the replay diverges from the recording, which makes it usable as a
+regression gate. Baselines live in `fixtures/`; see `fixtures/README.md` before trusting a
+divergence.
+
+The compiler comes from the copy bundled with Android Studio, so no Gradle and no network
+are involved. Set `KOTLIN_COMPILER_JAR` to override it.
+
+An event log replays the decision layer. To replay from **audio** — which is what makes
+changes to feature extraction measurable — arm raw capture first:
+
+1. Triple-tap "sound level" to reveal the debug readout.
+2. Tap the readout. It shows `REC` once armed. This is per-recording and is deliberately
+   not persisted: a night costs ~500 MB.
+3. Record as usual, then `npm run pull:night -- --audio`.
+4. `npm run replay -- night.wav`.
+
+The recording is the decimated analysis stream the classifier actually consumes, plus a
+small `night.chunks` sidecar holding the amplitude and timing the phone measured for each
+read. The sidecar is what makes the replay faithful: amplitude drives the quiet floor and
+every episode boundary, and it cannot be recovered from decimated audio. Both files must
+be pulled together, and a new recording deletes them.
+
+If the service is restarted mid-session (a process kill, which `START_STICKY` recovers
+from), the log and the recording are appended to rather than truncated, and the night keeps
+its original start — a `resume` event marks the seam. One caveat for such a night: the
+phone re-calibrates its quiet floor over the 4 s after a restart and reports nothing during
+it, while a replay carries its floor straight across, so episodes straddling the seam can
+differ. Everything outside that window replays exactly.
 
 ---
 

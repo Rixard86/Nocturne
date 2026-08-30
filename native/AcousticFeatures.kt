@@ -185,22 +185,6 @@ object AcousticFeatures {
         // energy-envelope stats for stationarity (steady noise = tiny variance; snoring pulses)
         private var eSum = 0.0
         private var eSumSq = 0.0
-        // per-frame voiced F0 collection for exposing the episode's dominant pitch
-        private var lastMeanF0 = 0.0
-
-        /** Episode-level means and derived gates, captured on each classify() call so the
-         *  service can log why an episode was or wasn't accepted. */
-        class Snapshot {
-            var low = 0.0; var midLow = 0.0; var high = 0.0
-            var flat = 0.0; var zcr = 0.0; var periodicity = 0.0
-            var voicedFrac = 0.0; var meanF0 = 0.0
-            var peak200 = 0.0; var peak1k = 0.0; var eVar = 0.0
-            var lowDominant = false; var twoPeak = false; var steadyNoise = false
-            var snoreScore = 0; var movementScore = 0
-        }
-
-        val snapshot = Snapshot()
-
         fun reset() {
             frames = 0; voicedFrames = 0
             lowSum = 0.0; midLowSum = 0.0; highSum = 0.0
@@ -224,85 +208,34 @@ object AcousticFeatures {
         }
 
         val frameCount get() = frames
-        /** Dominant voiced pitch of the last classified episode (Hz), or 0. Used for
-         *  per-user F0 calibration. Valid only after classify() has been called. */
-        val dominantF0 get() = lastMeanF0
 
         /**
-         * Returns one of: "snore", "movement", "other".
-         * Thresholds are literature-guided and tuned conservatively:
-         *  - snore:    energy concentrated < 1.5 kHz, low spectral flatness (tonal),
-         *              strong periodicity / voiced fraction, low-ish ZCR, F0 90-300 Hz.
-         *  - movement: broadband & non-periodic — high flatness, high ZCR, high-freq
-         *              energy present, little/no pitch.
-         *  - other:    everything else (mid/high tonal like speech/TV, transients).
+         * Collapse the accumulated per-frame sums into this episode's feature means, or
+         * null if no frame was ever analysed. The verdict is deliberately not taken here:
+         * it depends on the per-user F0 band, which the rhythm gate owns, so the caller
+         * passes both to [SnoreVerdict.decide]. That keeps one decision path for the
+         * device and the replay harness.
          */
-        fun classify(): String = classify(60.0, 320.0)
-
-        /**
-         * Classify with a per-user snore-F0 band [f0Lo, f0Hi]. Calibration narrows this to
-         * the person's own snore pitch over the night, tightening rejection of off-pitch
-         * voiced sounds (speech, TV). Defaults span the general snore range.
-         */
-        fun classify(f0Lo: Double, f0Hi: Double): String {
-            if (frames == 0) { lastMeanF0 = 0.0; return "other" }
-            val low = lowSum / frames
-            val midLow = midLowSum / frames
-            val high = highSum / frames
-            val flat = flatSum / frames
-            val zcr = zcrSum / frames
-            val periodicity = periodicitySum / frames
-            val voicedFrac = voicedFrames.toDouble() / frames
-            val meanF0 = if (f0Count > 0) f0Sum / f0Count else 0.0
-            val peak200 = peak200Sum / frames
-            val peak1k = peak1kSum / frames
-            val lowband = low + midLow            // energy below 1.5 kHz
-            lastMeanF0 = meanF0
-            snapshot.low = low; snapshot.midLow = midLow; snapshot.high = high
-            snapshot.flat = flat; snapshot.zcr = zcr; snapshot.periodicity = periodicity
-            snapshot.voicedFrac = voicedFrac; snapshot.meanF0 = meanF0
-            snapshot.peak200 = peak200; snapshot.peak1k = peak1k
-
-            // stationarity: variance of the log-energy envelope. Steady sources (fan, HVAC,
-            // traffic hiss) barely fluctuate; snoring pulses breath-to-breath. Very low
-            // variance over a multi-frame episode ⇒ steady noise, never a snore.
+        fun featureMeans(): SnoreVerdict.Features? {
+            if (frames == 0) return null
+            val f = SnoreVerdict.Features()
+            f.frames = frames
+            f.low = lowSum / frames
+            f.midLow = midLowSum / frames
+            f.high = highSum / frames
+            f.flat = flatSum / frames
+            f.zcr = zcrSum / frames
+            f.periodicity = periodicitySum / frames
+            f.voicedFrac = voicedFrames.toDouble() / frames
+            f.meanF0 = if (f0Count > 0) f0Sum / f0Count else 0.0
+            f.peak200 = peak200Sum / frames
+            f.peak1k = peak1kSum / frames
             val eMean = eSum / frames
-            val eVar = max(0.0, eSumSq / frames - eMean * eMean)
-            val steadyNoise = frames >= 8 && eVar < 0.05
-            snapshot.eVar = eVar; snapshot.steadyNoise = steadyNoise
-
-            // HARD GATE: a snore's fundamental band (40-300 Hz) must carry real energy
-            // and rival the mid band. Speech/TV concentrates in 300-1500+ Hz and fails this.
-            val lowDominant = low >= 0.30 && low >= midLow * 0.8
-            // two-peak snore signature (Shin & Cho): a narrow ~200 Hz peak plus a ~1 kHz peak
-            val twoPeak = peak200 > 0.08 && peak1k > 0.03
-            snapshot.lowDominant = lowDominant; snapshot.twoPeak = twoPeak
-
-            val snoreScore =
-                (if (lowband > 0.60) 1 else 0) +
-                (if (flat < 0.35) 1 else 0) +
-                (if (periodicity > 0.45 || voicedFrac > 0.35) 1 else 0) +
-                (if (zcr < 0.18) 1 else 0) +
-                (if (meanF0 in f0Lo..f0Hi) 1 else 0) +
-                (if (twoPeak) 1 else 0)
-
-            val movementScore =
-                (if (flat > 0.45) 1 else 0) +
-                (if (zcr > 0.22) 1 else 0) +
-                (if (high > 0.30) 1 else 0) +
-                (if (periodicity < 0.35 && voicedFrac < 0.2) 1 else 0)
-
-            snapshot.snoreScore = snoreScore; snapshot.movementScore = movementScore
-
-            return when {
-                steadyNoise -> if (movementScore >= 2) "movement" else "other"
-                lowDominant && snoreScore >= 4 && snoreScore >= movementScore -> "snore"
-                lowDominant && snoreScore >= 3 && flat < 0.40 && movementScore < 3 -> "snore"
-                movementScore >= 3 -> "movement"
-                else -> "other"
-            }
+            f.eVar = max(0.0, eSumSq / frames - eMean * eMean)
+            return f
         }
     }
+
 
     /**
      * Decimate a slice of 44.1kHz Short samples to Double at DECIM_FACTOR reduction,
