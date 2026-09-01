@@ -4,6 +4,9 @@ import { drawHalo, nativeAmp, resetHalo, setNativeAmp } from './halo.js';
 import { switchView } from './navigation.js';
 import { recBtn, stopRec } from './recorder.js';
 import { S, snoreRatio } from './state.js';
+
+// The service writes its closing events just after stop() resolves; give them time to land.
+const FINAL_FLUSH_MS = 600;
 import { saveSettings } from './storage.js';
 import { $, fmtDur, toast } from './ui.js';
 
@@ -106,6 +109,26 @@ async function startNative(plugin){
   }
 }
 
+/**
+ * Rebuild the night from the service's own event log.
+ *
+ * The log is the only complete record. Anything the UI holds in memory is whatever happened
+ * to arrive while the WebView was alive and listening, which across an eight-hour night is
+ * not the same thing at all.
+ */
+function rebuildFromLog(events){
+  const rebuilt={ samples:[], events:[], sounds:[], pauses:[] };
+  for(const ev of (events||[])){
+    switch(ev.e){
+      case 'sample': rebuilt.samples.push({t:ev.t, amp:ev.amp, lvl:ev.lvl}); break;
+      case 'snore': rebuilt.events.push({id:'e'+rebuilt.events.length, t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:'snore', clip:ev.clip||''}); break;
+      case 'sound': rebuilt.sounds.push({t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:ev.kind}); break;
+      case 'pause': rebuilt.pauses.push({t:ev.t, dur:ev.dur, clip:ev.clip||''}); break;
+    }
+  }
+  return rebuilt;
+}
+
 // On launch, recover a recording the UI may have missed (OS killed the WebView while the
 // foreground service kept running). Reads the persisted session and either resumes the
 // live UI (still recording) or finalizes an orphaned night (service already stopped).
@@ -115,17 +138,8 @@ async function reattachSession(plugin){
   try{ st = await plugin.getState(); }catch(e){ return false; }
   if(!st || !st.events || !st.events.length) return false;
 
-  // rebuild accumulated state from the event log
-  const rebuilt={ samples:[], events:[], sounds:[], pauses:[] };
-  let snoreN=0, pauseN=0;
-  for(const ev of st.events){
-    switch(ev.e){
-      case 'sample': rebuilt.samples.push({t:ev.t, amp:ev.amp, lvl:ev.lvl}); break;
-      case 'snore': snoreN++; rebuilt.events.push({id:'e'+rebuilt.events.length, t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:'snore', clip:ev.clip||''}); break;
-      case 'sound': rebuilt.sounds.push({t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:ev.kind}); break;
-      case 'pause': pauseN++; rebuilt.pauses.push({t:ev.t, dur:ev.dur, clip:ev.clip||''}); break;
-    }
-  }
+  const rebuilt = rebuildFromLog(st.events);
+  const snoreN = rebuilt.events.length, pauseN = rebuilt.pauses.length;
   if(rebuilt.samples.length<5 && !(st.active && st.running)) return false; // nothing worth recovering
 
   if(st.active && st.running){
@@ -147,7 +161,7 @@ async function reattachSession(plugin){
     S.native=true;
     finalize(false);
     S.native=false;
-    if(plugin.clearSession){ try{ await plugin.clearSession(); }catch(e){} }
+    await clearNativeSession(plugin);
     switchView('report');
     toast('Recovered a recording that ended while the app was closed.');
     return true;
@@ -187,9 +201,46 @@ async function stopNative(){
   $('levelVal').textContent='—';
   $('haloSub').textContent='Tap record to begin';
   $('recHint').textContent="Place your phone face-down on the mattress or nightstand, within arm's reach. Keep it plugged in.";
-  if(wasCalibrating){ toast('Stopped during calibration — nothing recorded.'); return; }
+  if(wasCalibrating){
+    await clearNativeSession(plugin);
+    toast('Stopped during calibration — nothing recorded.');
+    return;
+  }
+
+  // Reconcile against the durable log before finalizing. stop() resolves when the service is
+  // scheduled to stop, not when it has finished: the last episode and any closing pause are
+  // written after that, and listeners have already been removed by this point. Anything the
+  // UI missed while backgrounded is also only in the log. A short wait lets that final flush
+  // land before it is read.
+  await new Promise(r => setTimeout(r, FINAL_FLUSH_MS));
+  await reconcileWithLog(plugin);
+
   if(S.samples.length>5){ finalize(false); switchView('report'); }
   else toast('Night was too short to analyze. Try the sample.');
+  // Clear the session now the night is saved. Without this the log outlives the night, and
+  // the next cold launch takes the recovery path and finalizes the very same recording again
+  // as a duplicate stamped with the launch time.
+  await clearNativeSession(plugin);
+}
+
+/** Replace in-memory state with the service's log whenever the log holds more. */
+async function reconcileWithLog(plugin){
+  if(!plugin || !plugin.getState) return;
+  try{
+    const st = await plugin.getState();
+    if(!st || !st.events || !st.events.length) return;
+    const rebuilt = rebuildFromLog(st.events);
+    if(rebuilt.samples.length < S.samples.length) return;   // keep the fuller record
+    const recovered = rebuilt.events.length - S.events.length;
+    S.samples=rebuilt.samples; S.events=rebuilt.events;
+    S.sounds=rebuilt.sounds; S.pauses=rebuilt.pauses;
+    if(st.startMs) S.startTime = st.startMs;
+    if(recovered>0) toast(`Recovered ${recovered} snore${recovered===1?'':'s'} the app missed.`);
+  }catch(e){ /* keep whatever the UI already has */ }
+}
+
+async function clearNativeSession(plugin){
+  if(plugin && plugin.clearSession){ try{ await plugin.clearSession(); }catch(e){} }
 }
 
 export { nativePlugin, reattachSession, startNative, stopNative };
