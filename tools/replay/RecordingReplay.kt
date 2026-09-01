@@ -29,11 +29,11 @@ class RecordingReplay {
 
     fun run(recording: Recording): RecordingTotals {
         val totals = RecordingTotals()
-        segmenter.begin(recording.sampleRate, 0L)
+        segmenter.begin(recording.analysisRate, 0L)
         segmenter.sensitivityRatio = recording.sensitivity
         val read = Recording.Read()
         val chunk = EpisodeSegmenter.Chunk()
-        chunk.decimated = true
+        chunk.decimated = recording.decimated
         while (recording.next(read)) {
             totals.chunks++
             totals.seconds = read.atMs / 1000.0

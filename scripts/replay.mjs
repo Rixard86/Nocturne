@@ -22,6 +22,7 @@ const DETECTOR_SOURCES = [
 const COMPILER_MAIN = 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler';
 const STUDIO_KOTLINC = 'C:/Program Files/Android/Android Studio/plugins/Kotlin/kotlinc/lib/kotlin-compiler.jar';
 const STUDIO_JBR = 'C:/Program Files/Android/Android Studio/jbr/bin/java.exe';
+const FFMPEG_FALLBACK = 'C:/Program Files/audiamus/AAX Audio Converter/ffmpeg.exe';
 
 function javaExe() {
   const home = process.env.JAVA_HOME;
@@ -66,9 +67,28 @@ function compile(files) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+// A reference recording is FLAC to keep a whole night under a couple of gigabytes; the
+// harness reads WAV, so decode it once into the build directory first.
+function decodeFlac(input) {
+  const ffmpeg = process.env.FFMPEG ?? FFMPEG_FALLBACK;
+  if (!existsSync(ffmpeg)) {
+    console.error(`Cannot decode ${input}: no ffmpeg. Set FFMPEG to an ffmpeg.exe.`);
+    process.exit(2);
+  }
+  const wav = join(OUT_DIR, 'decoded.wav');
+  if (existsSync(wav) && statSync(wav).mtimeMs > statSync(input).mtimeMs) return wav;
+  console.log('Decoding FLAC to WAV');
+  const result = spawnSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', input, wav],
+    { stdio: 'inherit' });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+  return wav;
+}
+
 mkdirSync(OUT_DIR, { recursive: true });
 const files = sourceFiles();
 if (isStale(files)) compile(files);
 
-const result = spawnSync(javaExe(), ['-jar', OUT_JAR, ...process.argv.slice(2)], { stdio: 'inherit' });
+const args = process.argv.slice(2).map(arg =>
+  arg.toLowerCase().endsWith('.flac') ? decodeFlac(arg) : arg);
+const result = spawnSync(javaExe(), ['-jar', OUT_JAR, ...args], { stdio: 'inherit' });
 process.exit(result.status ?? 1);
