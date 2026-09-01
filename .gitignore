@@ -24,3 +24,6 @@ clips/
 tools/replay/build/
 /night.wav
 /night.chunks
+
+# Reference microphone recordings
+reference/

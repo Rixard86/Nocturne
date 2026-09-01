@@ -7,6 +7,7 @@
     "dev": "node scripts/dev-server.mjs",
     "pull:night": "node scripts/pull-night.mjs",
     "replay": "node scripts/replay.mjs",
+    "record:reference": "node scripts/record-reference.mjs",
     "prepare:android": "node scripts/prepare-android.mjs",
     "build:android": "node scripts/prepare-android.mjs && node scripts/gradle.mjs assembleDebug",
     "install:android": "node scripts/install-apk.mjs",

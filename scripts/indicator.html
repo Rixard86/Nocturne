@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nocturne reference mic</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font: 16px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #fff; text-align: center;
+    background: #4a4a52;
+    transition: background-color .25s ease;
+  }
+  body[data-state="recording"] { background: #c81e1e; }
+  body[data-state="idle"]      { background: #19783c; }
+  body[data-state="lost"]      { background: #4a4a52; }
+  h1 {
+    margin: 0; font-size: clamp(28px, 7vw, 68px);
+    letter-spacing: .04em; font-weight: 700;
+  }
+  .dot {
+    display: inline-block; width: .5em; height: .5em;
+    border-radius: 50%; background: #fff; margin-right: .3em;
+    vertical-align: middle;
+  }
+  body[data-state="recording"] .dot { animation: pulse 1.4s ease-in-out infinite; }
+  body:not([data-state="recording"]) .dot { display: none; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  .elapsed { font-variant-numeric: tabular-nums; font-size: clamp(20px, 4vw, 40px); margin-top: .3em; }
+  .detail { margin-top: 1.2em; opacity: .85; font-size: clamp(13px, 2vw, 18px); }
+  .file { margin-top: .4em; opacity: .6; font-size: clamp(11px, 1.6vw, 15px); word-break: break-all; }
+</style>
+
+<h1><span class="dot"></span><span id="title">CONNECTING</span></h1>
+<div class="elapsed" id="elapsed"></div>
+<div class="detail" id="detail"></div>
+<div class="file" id="file"></div>
+
+<script>
+  const TITLES = { recording: 'MIC LIVE', idle: 'MIC OFF', lost: 'RECORDER NOT RUNNING' };
+
+  function render(state, status) {
+    document.body.dataset.state = state;
+    document.getElementById('title').textContent = TITLES[state];
+    document.getElementById('detail').textContent =
+      state === 'lost' ? 'start it with: npm run record:reference' : (status.detail || '');
+    document.getElementById('file').textContent = status.file || '';
+    const seconds = status.elapsedSec || 0;
+    document.getElementById('elapsed').textContent = state === 'recording'
+      ? String(Math.floor(seconds / 60)).padStart(2, '0') + ':' +
+        String(Math.floor(seconds % 60)).padStart(2, '0')
+      : '';
+    document.title = (state === 'recording' ? '● REC ' : '') + 'Nocturne mic';
+  }
+
+  async function poll() {
+    try {
+      const response = await fetch('/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error('bad status');
+      const status = await response.json();
+      render(status.state === 'recording' ? 'recording' : 'idle', status);
+    } catch {
+      // the server is the recorder itself, so an unreachable server means the recorder is
+      // gone — which must never look like "the microphone is safely off"
+      render('lost', {});
+    }
+  }
+
+  poll();
+  setInterval(poll, 500);
+</script>

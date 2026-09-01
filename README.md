@@ -102,6 +102,7 @@ That regenerates and patches `android/`, then runs `assembleDebug`. The APK land
 | `npm run deploy` | Prepare, build, and install to the phone — the usual one |
 | `npm run pull:night` | Pull last night's diagnostic log and summarise it (`-- --audio` also pulls the raw recording) |
 | `npm run replay` | Replay a recorded night through the detector off-device |
+| `npm run record:reference` | Record a PC microphone in sync with the phone's session |
 | `npm run prepare:android` | Generate + patch the native project (no compile) |
 | `npm run build:android` | Prepare, then build the debug APK |
 | `npm run install:android` | Install the built APK |
@@ -160,6 +161,37 @@ its original start — a `resume` event marks the seam. One caveat for such a ni
 phone re-calibrates its quiet floor over the 4 s after a restart and reports nothing during
 it, while a replay carries its floor straight across, so episodes straddling the seam can
 differ. Everything outside that window replays exactly.
+
+### Recording a reference microphone
+
+A second microphone in the room gives what the phone alone cannot: ground truth. The phone's
+log only shows what it *confirmed* — it says nothing about what it missed.
+
+`npm run record:reference -- --connect <phone-ip>:5555` watches the phone's own session file
+and runs a PC microphone for exactly as long as the phone records, starting and stopping with
+it. The phone stays by your face on a wall charger; the link is wireless adb, enabled once
+with `adb tcpip 5555` while it is plugged in.
+
+Alignment is measured rather than assumed: the phone's clock is read alongside the PC's at
+both ends of the recording and written to a `.json` beside the audio, so events logged in
+phone time convert to an offset into the reference audio even if the clocks disagree.
+
+It serves a status page at `http://localhost:4321/` and opens it automatically: solid green
+when the microphone is off, solid red with a running timer while it records. The recorder
+serves that page itself, so if it dies the page stops loading and says so — an unreachable
+server can never be mistaken for "the microphone is safely off". Leave the recorder running;
+it keeps watching after each recording rather than exiting.
+
+Two gotchas worth knowing:
+
+- ffmpeg's DirectShow parser splits on `:`, and "Elgato Wave:3" contains one — devices must
+  be addressed by their alternative-name GUID, which the script does automatically.
+- The app deletes `session.json` when it finalizes a night, so the script treats a missing
+  session file as "finished" and an unreachable phone as "keep recording".
+
+`npm run replay` accepts such a recording directly. It has no `night.chunks` sidecar, but it
+does not need one: the sidecar exists only because the phone stores decimated audio that has
+lost its amplitude, and a full-rate reference recording still carries it.
 
 ---
 
