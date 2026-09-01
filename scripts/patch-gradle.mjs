@@ -3,12 +3,7 @@ import { readFileSync, writeFileSync } from 'fs';
 const KOTLIN_PLUGIN_VERSION = '1.9.25';
 const CORE_KTX_VERSION = '1.13.1';
 // Health Connect, for reading sleep stages and overnight vitals from a wearable.
-//
-// This is the newest release that still builds against this toolchain. 1.1.0-beta01 and
-// later demand compileSdk 36 and AGP 8.9.1; the alpha08..alpha12 range demands compileSdk
-// 35. Moving to stable therefore means moving the whole Android toolchain, which is a
-// separate job from reading a sleep record.
-const HEALTH_CONNECT_VERSION = '1.1.0-alpha07';
+const HEALTH_CONNECT_VERSION = '1.1.0';
 
 // Health Connect requires API 26. Capacitor's template defaults to 22, which this app has
 // never actually been able to run on anyway: a microphone foreground service is API 29+.
@@ -17,8 +12,21 @@ const ANDROID_APPLICATION_PLUGIN = "apply plugin: 'com.android.application'";
 
 // Capacitor's template ships Gradle 8.2.1, which refuses to run on JDK 21. Android
 // Studio bundles JDK 21, so the wrapper is raised to a version that accepts both it
-// and the JDK 17 used on CI.
-const GRADLE_WRAPPER_VERSION = '8.9';
+// and the JDK 17 used on CI. AGP 8.9 additionally requires Gradle 8.11.1 or newer.
+const GRADLE_WRAPPER_VERSION = '8.11.1';
+
+// Capacitor's template ships AGP 8.2.1, which caps compileSdk at 34. Health Connect's
+// stable line needs compileSdk 36 and AGP 8.9.1, so both move together - neither is
+// useful alone.
+const AGP_VERSION = '8.9.1';
+const COMPILE_SDK = 36;
+
+// targetSdk is deliberately NOT raised alongside compileSdk. compileSdk only decides which
+// APIs are on the compile classpath, while targetSdk opts the app into new runtime
+// behaviour - background limits, permission semantics, foreground service rules. This app
+// records audio all night through exactly those mechanisms, so that is a change to make
+// on its own, against a recorded night, not as a side effect of a dependency upgrade.
+const TARGET_SDK = 34;
 
 // The JDK running Gradle also sets Kotlin's default jvmTarget, while AGP pins Java to
 // 17. On JDK 21 those disagree and Kotlin modules fail to compile, so every module's
@@ -134,13 +142,24 @@ function patchAppGradle(path, version) {
 }
 
 function patchVariables(path) {
-  const text = readFileSync(path, 'utf8');
-  writeFileSync(path, text.replace(/minSdkVersion\s*=\s*\d+/, `minSdkVersion = ${MIN_SDK}`));
+  const text = readFileSync(path, 'utf8')
+    .replace(/minSdkVersion\s*=\s*\d+/, `minSdkVersion = ${MIN_SDK}`)
+    .replace(/compileSdkVersion\s*=\s*\d+/, `compileSdkVersion = ${COMPILE_SDK}`)
+    .replace(/targetSdkVersion\s*=\s*\d+/, `targetSdkVersion = ${TARGET_SDK}`);
+  writeFileSync(path, text);
+}
+
+function setAgpVersion(text) {
+  return text.replace(
+    /com\.android\.tools\.build:gradle:[\d.]+/,
+    `com.android.tools.build:gradle:${AGP_VERSION}`
+  );
 }
 
 function patchRootGradle(path) {
   let text = readFileSync(path, 'utf8');
   text = addKotlinClasspath(text);
+  text = setAgpVersion(text);
   text = pinKotlinJvmTarget(text);
   writeFileSync(path, text);
 }
@@ -155,5 +174,5 @@ export function patchGradle(paths, version) {
   patchVariables(paths.variables);
   setWrapperVersion(paths.wrapper);
   patchAppGradle(paths.app, version);
-  return `wrapper ${GRADLE_WRAPPER_VERSION}, kotlin jvmTarget ${JVM_TARGET}, minSdk ${MIN_SDK}, versionCode ${version.code}, versionName ${version.name}`;
+  return `wrapper ${GRADLE_WRAPPER_VERSION}, AGP ${AGP_VERSION}, compileSdk ${COMPILE_SDK}, targetSdk ${TARGET_SDK}, minSdk ${MIN_SDK}, versionCode ${version.code}`;
 }

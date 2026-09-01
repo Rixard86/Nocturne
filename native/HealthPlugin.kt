@@ -77,6 +77,10 @@ class HealthPlugin : Plugin() {
         }
     }
 
+    // The ActivityResult is deliberately ignored: Health Connect reports a cancelled screen
+    // the same way whether or not anything was granted, and a user can change grants inside
+    // it without ever returning a result. Asking the permission controller what is actually
+    // granted is the only answer that is true afterwards.
     @ActivityCallback
     private fun permissionResult(call: PluginCall?, result: ActivityResult) {
         if (call == null) return
