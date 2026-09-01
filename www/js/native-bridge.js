@@ -7,6 +7,14 @@ import { S, snoreRatio } from './state.js';
 
 // The service writes its closing events just after stop() resolves; give them time to land.
 const FINAL_FLUSH_MS = 600;
+
+// Capture watchdog. Every failure in this area used to be invisible: the service could die
+// or its audio stream go silent while the UI sat showing a healthy recording all night, and
+// the first anyone knew was an empty report in the morning. Level events arrive ~10x a
+// second, so a minute without one means capture has stopped, whatever the UI believes.
+const HEARTBEAT_CHECK_MS = 30000;
+const HEARTBEAT_STALE_MS = 60000;
+const RECORDING_HINT = 'Recording. You can lock the screen — Nocturne keeps listening in the background. Tap stop when you wake.';
 import { saveSettings } from './storage.js';
 import { $, fmtDur, toast } from './ui.js';
 
@@ -42,6 +50,7 @@ async function startNative(plugin){
   }catch(e){}
   // reset state
   S.recording=true; S.native=true; S.startTime=Date.now();
+  startCaptureWatchdog(plugin);
   S.samples=[]; S.events=[]; S.pauses=[]; S.recordings={}; S.sounds=[];
   S.inSnore=false; S.quietSince=0; S.loudSince=0; S.snoreEp=null; S.silentSince=0; S.lastEpLoud=0; S.lastEpDur=0;
   S.calibrating=true; S.baseline=0.012;
@@ -81,6 +90,7 @@ async function startNative(plugin){
     $('lsPause').textContent=e.count;
   });
   await add('nocturneLevel', e=>{
+    noteHeartbeat();
     setNativeAmp((e.level||0)/100*0.2); // map 0-100 back to an amp-ish value for the halo
     if(e.baseline!=null) S._liveBase=e.baseline; // live floor (native keeps adapting it)
     $('levelVal').textContent=e.level;
@@ -168,9 +178,52 @@ async function reattachSession(plugin){
   }
 }
 
+
+/** Record that capture is alive; called on every level event. */
+function noteHeartbeat(){ S._lastLevelMs = Date.now(); }
+
+function showCaptureStalled(silentSec, serviceAlive){
+  const hint=$('recHint'); if(!hint) return;
+  hint.textContent = serviceAlive === false
+    ? `Capture has stopped — the recording service is no longer running (silent ${silentSec}s). Tap stop and start again.`
+    : `No sound has reached Nocturne for ${silentSec}s. The microphone may be blocked by another app. Tap stop and start again.`;
+  hint.style.color = '#F5766A';
+  S._captureStalled = true;
+}
+
+function clearCaptureStalled(){
+  if(!S._captureStalled) return;
+  const hint=$('recHint');
+  if(hint){ hint.textContent = RECORDING_HINT; hint.style.color = ''; }
+  S._captureStalled = false;
+}
+
+function startCaptureWatchdog(plugin){
+  stopCaptureWatchdog();
+  noteHeartbeat();
+  S._watchdog = setInterval(async ()=>{
+    if(!S.recording){ stopCaptureWatchdog(); return; }
+    const silentMs = Date.now() - (S._lastLevelMs || 0);
+    if(silentMs < HEARTBEAT_STALE_MS){ clearCaptureStalled(); return; }
+    // Ask the service directly before blaming it: a stalled audio stream and a dead service
+    // need different words, and the user can only act on the difference.
+    let alive = null;
+    if(plugin && plugin.isRunning){
+      try{ alive = (await plugin.isRunning()).running; }catch(e){}
+    }
+    showCaptureStalled(Math.round(silentMs/1000), alive);
+  }, HEARTBEAT_CHECK_MS);
+}
+
+function stopCaptureWatchdog(){
+  if(S._watchdog){ clearInterval(S._watchdog); S._watchdog=0; }
+  clearCaptureStalled();
+}
+
 // Re-wire native listeners to a recording already in progress (used by reattach).
 async function resumeNativeListeners(plugin){
   S.recording=true; S.native=true; S.calibrating=false;
+  startCaptureWatchdog(plugin);
   recBtn.classList.add('recording');
   $('haloState').textContent='Listening';
   $('recHint').textContent='Recording. You can lock the screen — Nocturne keeps listening in the background. Tap stop when you wake.';
@@ -180,7 +233,7 @@ async function resumeNativeListeners(plugin){
   await add('nocturneSnore', e=>{ S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, kind:'snore', clip:e.clip||''}); $('lsSnore').textContent=e.count; });
   await add('nocturneSound', e=>{ S.sounds.push({t:e.t, dur:e.dur, lvl:e.level, kind:e.kind}); });
   await add('nocturnePause', e=>{ S.pauses.push({t:e.t, dur:e.dur, clip:e.clip||''}); $('lsPause').textContent=e.count; });
-  await add('nocturneLevel', e=>{ setNativeAmp((e.level||0)/100*0.2); if(e.baseline!=null) S._liveBase=e.baseline; $('levelVal').textContent=e.level; $('lsElapsed').textContent=fmtDur(e.elapsed||0); $('haloSub').textContent=e.snoring?'Snoring detected':'Breathing steady'; });
+  await add('nocturneLevel', e=>{ noteHeartbeat(); setNativeAmp((e.level||0)/100*0.2); if(e.baseline!=null) S._liveBase=e.baseline; $('levelVal').textContent=e.level; $('lsElapsed').textContent=fmtDur(e.elapsed||0); $('haloSub').textContent=e.snoring?'Snoring detected':'Breathing steady'; });
   await add('nocturneError', e=>{ toast(e.message||'Recording error'); stopRec(); });
   await add('nocturneAlarm', e=>{ toast('⏰ Smart alarm — good morning'); });
   const animate=()=>{ if(!S.recording||!S.native) return; drawHalo(nativeAmp(), $('haloSub').textContent==='Snoring detected'); dbgTick(); nativeHaloRaf=requestAnimationFrame(animate); };
@@ -190,6 +243,7 @@ async function resumeNativeListeners(plugin){
 async function stopNative(){
   const plugin=nativePlugin();
   S.recording=false; S.native=false;
+  stopCaptureWatchdog();
   const wasCalibrating=S.calibrating; S.calibrating=false;
   recBtn.classList.remove('recording');
   if(nativeHaloRaf) cancelAnimationFrame(nativeHaloRaf);
