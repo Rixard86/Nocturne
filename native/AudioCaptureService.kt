@@ -91,6 +91,12 @@ class AudioCaptureService : Service() {
     private val pauseSlackSec = 2.0       // the pause may start just before the episode ends
     private val maxSincePauseSec = 20.0
 
+    // A pause is evidence of absence, so the clip has to carry the arc around it: the
+    // breathing before, the silence, and the recovery breath after. Without all three
+    // there is nothing a listener can judge - silence on its own proves nothing.
+    private val pausePreRollSec = 3
+    private val pausePostRollSec = 4
+
     private val readIdleMs = 10L          // brief pause on an empty read, so we never hot-spin
     private val silentStreamAmp = 1e-6    // below this the stream is digital silence, not a quiet room
     private val silentReadsBeforeWarning = 600  // ~1 min of silence before telling the user
@@ -156,14 +162,20 @@ class AudioCaptureService : Service() {
     private var clipsDir: File? = null
 
     // rolling ring buffer of recent DECIMATED audio, so a breathing pause can be saved
-    // with context (the snore before, the silence, and the gasp after). Decimated to
-    // keep memory small: ~45s at 8820 Hz ≈ 400k shorts ≈ 800 KB.
+    // with context (the snore before, the silence, and the gasp after). Sized from the
+    // pause bounds themselves so the two cannot drift apart: a maximum-length pause plus
+    // both rolls must fit, or the longest pauses silently lose their pre-roll.
+    // ~67s at 8820 Hz ≈ 590k shorts ≈ 1.2 MB.
     private var ringRate = 8820
-    private val ringSeconds = 45
+    private val ringSeconds = pausePreRollSec + maxPauseSec.toInt() + pausePostRollSec
     private var ring: ShortArray = ShortArray(0)
     private var ringPos = 0          // next write index (circular)
     private var ringFilled = 0       // how many valid samples are in the ring
     private var pauseSilenceStartMs = 0L  // wall-clock when the current silence began
+
+    // A pause whose clip is waiting for its recovery breath to be recorded. Zero when none.
+    private var pendingPauseStartMs = 0L
+    private var pendingPauseEndMs = 0L
 
     // smart alarm
     private var alarmEnabled = false
@@ -451,6 +463,7 @@ class AudioCaptureService : Service() {
             if (wasActive || reading.episodeStarted) appendClip(buffer, read)
             reading.finalized?.let { handleEpisode(it) }
             trackPause(reading, now)
+            flushPendingPause(now, false)
 
             NocturnePlugin.emitLevel(reading.level, reading.ratio > snoreRatio, elapsed, reading.baseline)
         }
@@ -459,6 +472,8 @@ class AudioCaptureService : Service() {
         segmenter.flush()?.let { handleEpisode(it) }
         // flush a pause still open at stop (silence continued to the end)
         if (silentSinceMs != 0L) closePause(SystemClock.elapsedRealtime())
+        // no more audio is coming, so write any held clip with the post-roll it managed to get
+        flushPendingPause(SystemClock.elapsedRealtime(), true)
         } finally {
             // always run: a throw here would otherwise leak the recorder and the wake lock,
             // and leave the recording without its patched header
@@ -579,15 +594,31 @@ class AudioCaptureService : Service() {
         val sinceEp = if (lastEpLoudMs != 0L) (silentSinceMs - lastEpLoudMs) / 1000.0 else Double.MAX_VALUE
         if (gap in minPauseSec..maxPauseSec && lastEpDurSec >= minSnoreBeforePauseSec &&
             sinceEp in -pauseSlackSec..maxSincePauseSec) {
-            pauseCount++
-            // save context audio: from ~3s before the silence began, through the silence,
-            // to now (the gasp/resumption). Read from the ring.
-            val path = writePauseClip(silentSinceMs, atMs)
-            val pt = nightMs(silentSinceMs) / 1000.0
-            NocturnePlugin.emitPause(pt, gap, pauseCount, path)
-            appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
+            // Hold the clip rather than writing it here. This runs on the FIRST non-silent
+            // reading, so the ring holds about one read of the recovery breath and no more -
+            // and that breath is the most diagnostic part of the whole event.
+            pendingPauseStartMs = silentSinceMs
+            pendingPauseEndMs = atMs
         }
         silentSinceMs = 0L
+    }
+
+    /**
+     * Write a held pause clip once its recovery breath has been recorded. `force` writes
+     * immediately with whatever the ring holds, for the stop path where no more audio is
+     * coming and waiting would lose the event entirely.
+     */
+    private fun flushPendingPause(nowMs: Long, force: Boolean) {
+        if (pendingPauseEndMs == 0L) return
+        if (!force && nowMs - pendingPauseEndMs < pausePostRollSec * 1000L) return
+        val gap = (pendingPauseEndMs - pendingPauseStartMs) / 1000.0
+        pauseCount++
+        val path = writePauseClip(pendingPauseStartMs, pendingPauseEndMs)
+        val pt = nightMs(pendingPauseStartMs) / 1000.0
+        NocturnePlugin.emitPause(pt, gap, pauseCount, path)
+        appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
+        pendingPauseStartMs = 0L
+        pendingPauseEndMs = 0L
     }
 
     /**
@@ -833,11 +864,13 @@ class AudioCaptureService : Service() {
      */
     private fun writePauseClip(silenceStartMs: Long, endMs: Long): String {
         if (ring.isEmpty() || ringFilled == 0) return ""
-        val preRollMs = 3000L
-        val windowMs = (endMs - silenceStartMs) + preRollMs
+        // The window is pre-roll + the silence + post-roll. There is deliberately no
+        // separate cap: the copy below takes the most recent `count` samples, so a cap
+        // shorter than the window would trim the FRONT and hand back a clip of nothing but
+        // silence - exactly the pauses that most need their context.
+        val windowMs = (endMs - silenceStartMs) + (pausePreRollSec + pausePostRollSec) * 1000L
         var count = ((windowMs * ringRate) / 1000L).toInt()
         count = min(count, ringFilled)
-        count = min(count, ringRate * 20)          // hard cap ~20s
         if (count <= 0) return ""
         val out = ShortArray(count)
         // ringPos is the next write slot; the most recent sample is at ringPos-1.
