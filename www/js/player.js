@@ -107,21 +107,33 @@ function synthPlayback(ev){
     const frac=Math.min(1, (performance.now()-start)/durMs);
     setSeek(frac);
     $('ppCur').textContent=fmtClock(Math.min(totalSec, el*(totalSec/(durMs/1000))));
-    if(frac>=1){ S._playing=false; setPlayIcon(false); return; }
+    if(frac>=1){ S._playing=false; setPlayIcon(false); stopSynthTimer(); return; }
     S._synthRaf=requestAnimationFrame(tick);
   };
   S._synthRaf=requestAnimationFrame(tick);
 }
 
+/**
+ * Cancel the synthesized-playback timer AND forget its handle.
+ *
+ * The handle doubles as the "this is synth playback, not a real clip" flag that gates the
+ * seek bar. Cancelling without clearing it left that flag set for the rest of the session,
+ * so one synthesized playback permanently disabled scrubbing on every real clip afterwards.
+ */
+function stopSynthTimer(){
+  if(S._synthRaf) cancelAnimationFrame(S._synthRaf);
+  S._synthRaf=0;
+}
+
 function pausePlayback(){
   S._playing=false; setPlayIcon(false);
   if(S._audioEl && !S._audioEl.paused){ try{ S._audioEl.pause(); }catch(e){} }
-  if(S._synthRaf) cancelAnimationFrame(S._synthRaf);
+  stopSynthTimer();
 }
 function stopPlayback(){
   S._playing=false; setPlayIcon(false);
   if(S._audioEl){ try{ S._audioEl.pause(); S._audioEl.currentTime=0; }catch(e){} }
-  if(S._synthRaf) cancelAnimationFrame(S._synthRaf);
+  stopSynthTimer();
   setSeek(0);
   const cur=$('ppCur'); if(cur) cur.textContent='0:00';
 }
