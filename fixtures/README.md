@@ -49,3 +49,37 @@ a logged rounding edge.
 
 `night.wav` and `night.chunks` must stay together and keep those names — the reader looks
 for the sidecar beside the audio.
+
+## Current-code baselines (measured 2026-09-01 at d38ef05)
+
+Re-measured because every number below the fixture descriptions had gone stale: the
+spectral-flatness fix changed feature *extraction*, and the confirmer's `certainScore` path
+changed which candidates confirm. Both landed after these fixtures were recorded. Run the
+same commands and compare against this table — a difference from these numbers is a real
+change, a difference from the prose above is not.
+
+| fixture | classified | verdict reproduced | snore | confirmed (replayed vs logged) |
+|---|---|---|---|---|
+| night-2026-08-30-baseline.jsonl | 1355 | 1339 | 193 | 116 vs 114 |
+| night-2026-09-01-baseline.jsonl | 1079 | 1073 | 663 | 545 vs 541 |
+| quiet-room-2026-08-30/events.jsonl | 11 | 11 | 1 | 0 vs 0 |
+| quiet-room-2026-08-30/night.wav | 11 | — | 4 | 1 |
+
+The two night logs report DIVERGED, and both are expected: each was recorded before a
+detector change that is now shipped, so their *logged* verdicts come from code that no
+longer exists. Only the quiet-room log replay passes clean.
+
+### The cross-path check cannot currently be run
+
+The quiet-room fixture used to prove that a recording replays as the phone actually ran:
+replaying its log and its audio gave the same answer. They now disagree — 1 snore / 0
+confirmed from the log, 4 snore / 1 confirmed from the audio.
+
+That is not a fidelity regression. The log replay reads *logged* features, which were
+computed before the flatness fix, while the audio replay recomputes them from the samples
+with the corrected code. The two paths are being fed different numbers, so they cannot
+agree, and no existing fixture can restore the comparison.
+
+**Restoring it needs one night recorded with current code and raw capture armed.** Until
+then the audio path is exercised but unverified against a known-good reference, which
+matters because feature-level detector changes can only be measured through it.
