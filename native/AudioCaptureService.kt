@@ -146,6 +146,13 @@ class AudioCaptureService : Service() {
     private var clipSampleRate = 44100
     private val clipMaxSamples get() = clipSampleRate * 10  // cap clip at ~10s
     private val clipRetentionMs = 7L * 24 * 60 * 60 * 1000  // keep clips ~7 days, then prune by age
+    // Age alone does not bound this. Measured on a real device: 524 clips totalling 192 MB,
+    // averaging 375 KB each, and a single night confirming 883 snores would add around
+    // 330 MB on its own. Pruning also ran only once, at session start, so nothing was
+    // reclaimed during the night that was filling the disk.
+    private val clipBudgetBytes = 250L * 1024 * 1024
+    private val pruneEveryBytes = 20L * 1024 * 1024   // bounds the overshoot between sweeps
+    private var bytesSincePrune = 0L
     private var clipsDir: File? = null
 
     // rolling ring buffer of recent DECIMATED audio, so a breathing pause can be saved
@@ -778,12 +785,31 @@ class AudioCaptureService : Service() {
         NocturnePlugin.emitAlarm()
     }
 
-    /** Delete snore/pause clips older than the retention window (age-based pruning). */
+    /**
+     * Keep the clip folder inside both its age and its size budget, oldest first.
+     *
+     * Called at session start and again during the night as clips accumulate, because a
+     * night that fills the disk cannot wait until the next one to reclaim anything.
+     */
     private fun pruneOldClips() {
         val dir = clipsDir ?: return
+        bytesSincePrune = 0L
+        val files = dir.listFiles() ?: return
         val cutoff = System.currentTimeMillis() - clipRetentionMs
-        dir.listFiles()?.forEach { f ->
-            if (f.lastModified() < cutoff) runCatching { f.delete() }
+        var remaining = 0L
+        val kept = ArrayList<File>(files.size)
+        for (f in files) {
+            if (f.lastModified() < cutoff) { runCatching { f.delete() }; continue }
+            remaining += f.length()
+            kept.add(f)
+        }
+        if (remaining <= clipBudgetBytes) return
+        // oldest first: the newest clips are the ones the user is most likely to play back
+        kept.sortBy { it.lastModified() }
+        for (f in kept) {
+            if (remaining <= clipBudgetBytes) break
+            val size = f.length()
+            if (f.delete()) remaining -= size
         }
     }
 
@@ -844,6 +870,8 @@ class AudioCaptureService : Service() {
             for (s in samples) body.putShort(s)
             fos.write(body.array())
             fos.flush(); fos.close()
+            bytesSincePrune += file.length()
+            if (bytesSincePrune >= pruneEveryBytes) pruneOldClips()
             file.absolutePath
         } catch (e: Exception) {
             ""
