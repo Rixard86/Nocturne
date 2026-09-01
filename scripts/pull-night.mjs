@@ -83,6 +83,37 @@ function pullRecording() {
   console.log(`\nReplay it with:  npm run replay -- ${RECORDING_FILES[0]}`);
 }
 
+/**
+ * How far the confirmed snores stood above the room floor.
+ *
+ * The level scale is logarithmic over a 14x span, so a peak level converts straight to dB:
+ * level/100 * 20*log10(14). This is the number that decides whether a night is worth
+ * analysing at all - below ~6 dB the snore is buried and no classifier change will help.
+ */
+function reportSignal(lines) {
+  const peaks = [];
+  for (const line of lines) {
+    if (!line.includes('"e":"snore"')) continue;
+    const found = /"lvl":([0-9]+)/.exec(line);
+    if (found) peaks.push(Number(found[1]));
+  }
+  if (!peaks.length) {
+    console.log('\nSignal: no confirmed snores to measure');
+    return;
+  }
+  peaks.sort((a, b) => a - b);
+  const dbPerLevel = (20 * Math.log10(14)) / 100;
+  const median = peaks[Math.floor(peaks.length / 2)] * dbPerLevel;
+  const best = peaks[peaks.length - 1] * dbPerLevel;
+  const verdict = median < 6 ? 'buried - fix placement before tuning anything'
+    : median < 12 ? 'weak' : 'workable';
+  console.log(
+    '\nSignal: median confirmed snore ' +
+    median.toFixed(1) + ' dB above the room floor (best ' + best.toFixed(1) +
+    ' dB, n=' + peaks.length + ') - ' + verdict
+  );
+}
+
 function tally(lines, event, field) {
   const counts = new Map();
   const matcher = new RegExp(`"${field}":"([^"]*)"`);
@@ -126,6 +157,8 @@ function main() {
     `\nEmitted: ${snores} snores, ${pauses} pauses` +
     `\nDuration: ~${(samples / 60).toFixed(0)} min of samples`
   );
+
+  reportSignal(lines);
 
   if (WANT_AUDIO) pullRecording();
   else console.log('\nPass --audio to also pull the raw recording, when one was captured.');
