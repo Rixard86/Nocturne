@@ -129,7 +129,7 @@ object AcousticFeatures {
         var total = 0.0; var low = 0.0; var midLow = 0.0; var high = 0.0
         var p200 = 0.0; var p1k = 0.0
         var centNum = 0.0
-        var logSum = 0.0; var linSum = 0.0; var cnt = 0
+        var logSum = 0.0; var linSum = 0.0; var cnt = 0; var magSum = 0.0
         for (k in 1 until half) {
             val mag = sqrt(re[k] * re[k] + im[k] * im[k])
             val p = mag * mag
@@ -144,9 +144,14 @@ object AcousticFeatures {
             if (hz in 180.0..260.0) p200 += p
             if (hz in 800.0..1200.0) p1k += p
             centNum += hz * mag
-            // flatness accumulators (use magnitude, guard zero)
-            val m = mag + 1e-12
-            logSum += ln(m); linSum += m; cnt++
+            magSum += mag
+            // Spectral flatness is the geometric over the arithmetic mean of the POWER
+            // spectrum. Accumulating magnitude instead inflates it badly: measured on real
+            // snore clips it read 0.570 where the correct value is 0.043, which both failed
+            // the tonal test (< 0.35) and tripped the broadband movement test (> 0.45) on
+            // the same episode. Every flatness threshold below is calibrated to this scale.
+            val pw = p + 1e-20
+            logSum += ln(pw); linSum += pw; cnt++
         }
         out.energy = total
         if (total > 1e-12) {
@@ -156,7 +161,6 @@ object AcousticFeatures {
             out.peak200 = p200 / total
             out.peak1k = p1k / total
         } else { out.lowRatio = 0.0; out.midLowRatio = 0.0; out.highRatio = 0.0; out.peak200 = 0.0; out.peak1k = 0.0 }
-        val magSum = linSum
         out.centroid = if (magSum > 1e-12) centNum / magSum else 0.0
         out.flatness = if (cnt > 0 && linSum > 1e-12) {
             val geo = kotlin.math.exp(logSum / cnt)
