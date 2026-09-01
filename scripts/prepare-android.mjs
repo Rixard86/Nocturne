@@ -78,6 +78,7 @@ function main() {
       {
         root: 'android/build.gradle',
         app: 'android/app/build.gradle',
+        variables: 'android/variables.gradle',
         wrapper: 'android/gradle/wrapper/gradle-wrapper.properties',
       },
       version()

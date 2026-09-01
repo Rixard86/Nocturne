@@ -2,6 +2,17 @@ import { readFileSync, writeFileSync } from 'fs';
 
 const KOTLIN_PLUGIN_VERSION = '1.9.25';
 const CORE_KTX_VERSION = '1.13.1';
+// Health Connect, for reading sleep stages and overnight vitals from a wearable.
+//
+// This is the newest release that still builds against this toolchain. 1.1.0-beta01 and
+// later demand compileSdk 36 and AGP 8.9.1; the alpha08..alpha12 range demands compileSdk
+// 35. Moving to stable therefore means moving the whole Android toolchain, which is a
+// separate job from reading a sleep record.
+const HEALTH_CONNECT_VERSION = '1.1.0-alpha07';
+
+// Health Connect requires API 26. Capacitor's template defaults to 22, which this app has
+// never actually been able to run on anyway: a microphone foreground service is API 29+.
+const MIN_SDK = 26;
 const ANDROID_APPLICATION_PLUGIN = "apply plugin: 'com.android.application'";
 
 // Capacitor's template ships Gradle 8.2.1, which refuses to run on JDK 21. Android
@@ -60,6 +71,12 @@ function addCoreKtx(text) {
   return text.replace(/(dependencies\s*\{)/, `$1\n${dependency}`);
 }
 
+function addHealthConnect(text) {
+  if (text.includes('androidx.health.connect')) return text;
+  const dependency = '    implementation "androidx.health.connect:connect-client:' + HEALTH_CONNECT_VERSION + '"' + String.fromCharCode(10);
+  return text.replace(/(dependencies\s*\{)/, '$1' + String.fromCharCode(10) + dependency);
+}
+
 function findBlockEnd(text, start) {
   const open = text.indexOf('{', start);
   let depth = 0;
@@ -109,10 +126,16 @@ function patchAppGradle(path, version) {
   let text = readFileSync(path, 'utf8');
   text = applyKotlinPlugin(text);
   text = addCoreKtx(text);
+  text = addHealthConnect(text);
   text = setVersion(text, version);
   text = replaceSigningConfigs(text);
   text = useDebugSigning(text);
   writeFileSync(path, text);
+}
+
+function patchVariables(path) {
+  const text = readFileSync(path, 'utf8');
+  writeFileSync(path, text.replace(/minSdkVersion\s*=\s*\d+/, `minSdkVersion = ${MIN_SDK}`));
 }
 
 function patchRootGradle(path) {
@@ -129,7 +152,8 @@ function setWrapperVersion(path) {
 
 export function patchGradle(paths, version) {
   patchRootGradle(paths.root);
+  patchVariables(paths.variables);
   setWrapperVersion(paths.wrapper);
   patchAppGradle(paths.app, version);
-  return `wrapper ${GRADLE_WRAPPER_VERSION}, kotlin jvmTarget ${JVM_TARGET}, versionCode ${version.code}, versionName ${version.name}`;
+  return `wrapper ${GRADLE_WRAPPER_VERSION}, kotlin jvmTarget ${JVM_TARGET}, minSdk ${MIN_SDK}, versionCode ${version.code}, versionName ${version.name}`;
 }
