@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import androidx.core.app.NotificationCompat
@@ -64,7 +65,12 @@ class AudioCaptureService : Service() {
     // detection state
     private val segmenter = EpisodeSegmenter()
     private var startMs = 0L              // when the NIGHT began (survives a restart)
-    private var captureStartMs = 0L       // when this capture run began
+    private var captureStartMs = 0L       // when this capture run began, wall clock
+    // Everything that measures a DURATION uses the monotonic clock instead. Wall time jumps:
+    // a DST transition lands at 02:00-03:00, inside every monitored night, and would shift
+    // the whole timeline by an hour and could trip the 12h auto-stop at 3 a.m.; an NTP
+    // correction during a silence could fabricate a breathing pause out of nothing.
+    private var captureStartElapsed = 0L
     private var sessionOffsetSec = 0.0    // seconds of the night already recorded before this run
     private var resumedSession = false
     private var resumedStartMs = 0L
@@ -309,11 +315,12 @@ class AudioCaptureService : Service() {
         val buffer = ShortArray(bufSize)
         silentReads = 0
         captureStartMs = System.currentTimeMillis()
+        captureStartElapsed = SystemClock.elapsedRealtime()
         // On a resume the night keeps its original start, so episode onsets and the elapsed
         // clock stay on one timeline across the interruption.
         startMs = if (resumedSession) resumedStartMs else captureStartMs
         sessionOffsetSec = (captureStartMs - startMs) / 1000.0
-        segmenter.begin(sampleRate / AcousticFeatures.DECIM_FACTOR, captureStartMs)
+        segmenter.begin(sampleRate / AcousticFeatures.DECIM_FACTOR, captureStartElapsed)
         clipSampleRate = sampleRate
         clipsDir = File(filesDir, "snore_clips").apply { mkdirs() }
         // Clips live in filesDir (not cacheDir) so they survive storage-pressure eviction
@@ -337,7 +344,7 @@ class AudioCaptureService : Service() {
         }
         val recordingDir = sessionDir
         rawCapture = if (rawCaptureEnabled && recordingDir != null) {
-            RawCapture(startMs, sensitivityRatio)
+            RawCapture(nightBaseElapsed(), sensitivityRatio)
                 .apply { resume = resumedSession }
                 .takeIf { it.open(recordingDir, sampleRate / AcousticFeatures.DECIM_FACTOR) }
         } else {
@@ -373,13 +380,13 @@ class AudioCaptureService : Service() {
                 break
             }
             if (read == 0) { Thread.sleep(readIdleMs); continue }
-            val now = System.currentTimeMillis()
+            val now = SystemClock.elapsedRealtime()
 
             // morning safety net: a recording left running for 12h+ auto-stops so it
             // doesn't run all day and drain the battery if the user forgets to tap stop.
             // (The state event is emitted AFTER the post-loop flush, so the final
             // episode/pause events reach the UI before it tears down its listeners.)
-            if (now - startMs > maxSessionMs) break
+            if (nightMs(now) > maxSessionMs) break
 
             val snoreRatio = sensitivityRatio
             segmenter.sensitivityRatio = snoreRatio
@@ -400,7 +407,7 @@ class AudioCaptureService : Service() {
                 continue
             }
 
-            val elapsed = (now - startMs) / 1000.0
+            val elapsed = nightMs(now) / 1000.0
             feedRing(buffer, read)
 
             // downsampled ~1s sample for the timeline
@@ -437,7 +444,7 @@ class AudioCaptureService : Service() {
         // flush a snore episode still open when recording stops
         segmenter.flush()?.let { handleEpisode(it) }
         // flush a pause still open at stop (silence continued to the end)
-        if (silentSinceMs != 0L) closePause(System.currentTimeMillis())
+        if (silentSinceMs != 0L) closePause(SystemClock.elapsedRealtime())
         } finally {
             // always run: a throw here would otherwise leak the recorder and the wake lock,
             // and leave the recording without its patched header
@@ -512,6 +519,18 @@ class AudioCaptureService : Service() {
         wakeLock = null
     }
 
+    /** Milliseconds since the night began, from a monotonic reading. */
+    private fun nightMs(nowElapsed: Long): Long =
+        nowElapsed - captureStartElapsed + (sessionOffsetSec * 1000).toLong()
+
+    /** The monotonic reading a given second of the night corresponds to. */
+    private fun elapsedAtNightSecond(second: Double): Long =
+        captureStartElapsed + ((second - sessionOffsetSec) * 1000).toLong()
+
+    /** Monotonic base for the whole night, so a resumed recording keeps one timeline. */
+    private fun nightBaseElapsed(): Long =
+        captureStartElapsed - (sessionOffsetSec * 1000).toLong()
+
     /** Feed the rolling ring buffer with decimated audio, for breathing-pause context. */
     private fun feedRing(buf: ShortArray, len: Int) {
         if (ring.isEmpty()) return
@@ -550,7 +569,7 @@ class AudioCaptureService : Service() {
             // save context audio: from ~3s before the silence began, through the silence,
             // to now (the gasp/resumption). Read from the ring.
             val path = writePauseClip(silentSinceMs, atMs)
-            val pt = (silentSinceMs - startMs) / 1000.0
+            val pt = nightMs(silentSinceMs) / 1000.0
             NocturnePlugin.emitPause(pt, gap, pauseCount, path)
             appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, gap)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
         }
@@ -649,7 +668,7 @@ class AudioCaptureService : Service() {
         snoreCount++
         NocturnePlugin.emitSnore(snore.onset, snore.durSec, snore.peak, snoreCount, snore.clip)
         appendSessionEvent("{\"e\":\"snore\",\"t\":${"%.1f".format(Locale.US, snore.onset)},\"dur\":${"%.2f".format(Locale.US, snore.durSec)},\"lvl\":${snore.peak},\"count\":$snoreCount,\"clip\":${jsonStr(snore.clip)}}")
-        lastEpLoudMs = startMs + (snore.onset * 1000).toLong() + (snore.durSec * 1000).toLong()
+        lastEpLoudMs = elapsedAtNightSecond(snore.onset + snore.durSec)
         lastEpDurSec = snore.durSec
     }
 
