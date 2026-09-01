@@ -66,6 +66,12 @@ function finalize(isDemo){
   const stages = estimateStages(S.samples, S.events, total, S.sounds);
 
   const night={
+    // `date` is when the night was FINALIZED, which is not when it began — a session
+    // recovered after a restart is finalized at launch time. `startMs` is the night's real
+    // wall-clock start, and every event `t` is seconds from it, so an event's absolute time
+    // is startMs + t*1000. Correlating a night against a wearable needs that anchor: both
+    // sides are then plain epoch milliseconds, with no timezone to get wrong.
+    startMs:S.startTime,
     date:new Date(),
     score, band:band(score).name,
     durationSec:total,

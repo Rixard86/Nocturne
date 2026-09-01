@@ -345,6 +345,13 @@ class AudioCaptureService : Service() {
         sessionLog = File(sessionDir, "events.jsonl").apply {
             if (!resumedSession) runCatching { if (exists()) delete() }
         }
+        // Every other line in this log is relative to the night's start. The only other place
+        // that start is recorded is session.json, which is deleted once the UI finalizes -
+        // and pull:night fetches the log, not the metadata. Without an absolute stamp here, a
+        // pulled night cannot be lined up against anything external, a wearable included.
+        // The zone offset is for reading the log by eye; the arithmetic uses startMs alone.
+        val tzOffsetMin = java.util.TimeZone.getDefault().getOffset(startMs) / 60000
+        appendSessionEvent("{\"e\":\"start\",\"startMs\":$startMs,\"tzOffsetMin\":$tzOffsetMin}")
         writeSessionMeta(true)
         if (resumedSession) {
             appendSessionEvent("{\"e\":\"resume\",\"t\":${"%.1f".format(Locale.US, sessionOffsetSec)}}")

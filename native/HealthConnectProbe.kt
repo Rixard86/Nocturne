@@ -121,13 +121,35 @@ object HealthConnectProbe {
         return out
     }
 
+    /**
+     * Stage boundaries as epoch milliseconds. A night's snore onsets are seconds from its
+     * own startMs, so epoch millis on both sides is what makes the two comparable without
+     * a timezone anywhere in the arithmetic.
+     */
+    private fun stageSpans(session: SleepSessionRecord): JSArray {
+        val spans = JSArray()
+        for (stage in session.stages) {
+            spans.put(
+                JSObject()
+                    .put("stage", stageName(stage.stage))
+                    .put("startMs", stage.startTime.toEpochMilli())
+                    .put("endMs", stage.endTime.toEpochMilli())
+            )
+        }
+        return spans
+    }
+
     private fun describe(session: SleepSessionRecord): JSObject = JSObject()
         .put("start", session.startTime.toString())
         .put("end", session.endTime.toString())
+        .put("startMs", session.startTime.toEpochMilli())
+        .put("endMs", session.endTime.toEpochMilli())
+        .put("zoneOffset", session.startZoneOffset?.id ?: "")
         .put("minutes", minutesBetween(session.startTime, session.endTime))
         .put("source", session.metadata.dataOrigin.packageName)
         .put("stageCount", session.stages.size)
         .put("stageMinutes", stageMinutes(session))
+        .put("stageSpans", stageSpans(session))
 
     private suspend fun sleep(scope: Scope): JSObject {
         val records = read(scope, SleepSessionRecord::class)
@@ -138,18 +160,54 @@ object HealthConnectProbe {
             .put("count", records.size)
             .put("sources", sources(records))
             .put("staged", records.count { it.stages.isNotEmpty() })
+            .put("overlappingPairs", countOverlaps(records))
             .put("sessions", sessions)
+    }
+
+    /**
+     * When a record was MEASURED, which is not when it was written. A wearable that
+     * backfills a week on first sync stamps every one of those records with the same
+     * lastModifiedTime, so reporting write time would hide the real span entirely.
+     */
+    private fun measuredSpan(record: Record): Pair<Instant, Instant> = when (record) {
+        // Dispatched on concrete types rather than the IntervalRecord / InstantaneousRecord
+        // interfaces, which are public in the bytecode but internal to Kotlin. These four
+        // are every type the probe reads.
+        is SleepSessionRecord -> record.startTime to record.endTime
+        is HeartRateRecord -> record.startTime to record.endTime
+        is HeartRateVariabilityRmssdRecord -> record.time to record.time
+        is RespiratoryRateRecord -> record.time to record.time
+        else -> record.metadata.lastModifiedTime to record.metadata.lastModifiedTime
+    }
+
+    /**
+     * Sessions that cover the same wall-clock time. Both Fitbit and Samsung Health hold
+     * WRITE_SLEEP, and if two apps describe one night, anything that sums across sessions
+     * silently double-counts it. Better to know that on day one than to explain a 16-hour
+     * night later.
+     */
+    private fun countOverlaps(sessions: List<SleepSessionRecord>): Int {
+        var pairs = 0
+        for (i in sessions.indices) {
+            for (j in i + 1 until sessions.size) {
+                val a = sessions[i]
+                val b = sessions[j]
+                if (a.startTime < b.endTime && b.startTime < a.endTime) pairs++
+            }
+        }
+        return pairs
     }
 
     /** Common summary for the vitals series: how many, from whom, and over what span. */
     private fun summarise(records: List<Record>, samples: Int): JSObject {
-        val times = records.map { it.metadata.lastModifiedTime }
+        val spans = records.map { measuredSpan(it) }
         return JSObject()
             .put("count", records.size)
             .put("samples", samples)
             .put("sources", sources(records))
-            .put("firstSeen", times.minOrNull()?.toString() ?: "")
-            .put("lastSeen", times.maxOrNull()?.toString() ?: "")
+            .put("firstMeasured", spans.minOfOrNull { it.first }?.toString() ?: "")
+            .put("lastMeasured", spans.maxOfOrNull { it.second }?.toString() ?: "")
+            .put("lastWritten", records.maxOfOrNull { it.metadata.lastModifiedTime }?.toString() ?: "")
     }
 
     private suspend fun heartRate(scope: Scope): JSObject {
