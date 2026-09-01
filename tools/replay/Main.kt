@@ -96,6 +96,8 @@ private fun replayRecording(file: File, showAll: Boolean): Int {
     if (showAll) {
         println()
         for (line in totals.episodeLines) println("  " + line)
+        println()
+        for (onset in totals.confirmedOnsets) println(String.format(Locale.US, "  CONFIRMED %.1f", onset))
     }
     return 0
 }

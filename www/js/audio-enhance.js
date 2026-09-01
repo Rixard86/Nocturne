@@ -1,3 +1,4 @@
+import { removeRoomNoise } from './denoise.js';
 /* ============================================================
    SNORE PLAYBACK ENHANCEMENT
 
@@ -24,6 +25,31 @@
 const RUMBLE_HZ = 70;      // below this is inaudible on a phone and only wastes headroom
 const HISS_HZ = 4000;      // little content above this; trims what noise there is
 
+// Mains hum. Anything on the grid frequency is a pump, a charger or a transformer, and it
+// sits right on top of the snore: measured in one bedroom, the 50 Hz series ran to 200x the
+// local noise at 50, 100, 150, 200 and 300 Hz, and it is audible as a buzz under every clip.
+// The rumble cut above already removes the fundamental, but its harmonics land inside the
+// snore band and survive it, so each one is notched out individually.
+//
+// Narrow, because mains frequency is regulated to a fraction of a hertz while a snore is
+// broad — a notch this sharp takes the tone and leaves a snore harmonic sitting beside it.
+// Note this is playback only. The same filtering measurably HURTS detection, because the
+// classifier's periodicity and pitch evidence currently leans on that hum; nothing here
+// touches the detector.
+const MAINS_HZ = 50;       // set to 60 where the grid runs at 60 Hz
+
+// The comb runs far higher than the snore band. Measured on a quiet stretch of a real night,
+// the loudest surviving tone after notching only six harmonics was still 643x its neighbours,
+// at 400 Hz - the eighth. Reaching to 2 kHz takes that to 20x, which is the point where what
+// remains is no longer a mains harmonic at all.
+const MAINS_HARMONICS = 40;
+
+// Constant BANDWIDTH, not constant Q. Mains is regulated to a fraction of a hertz at every
+// harmonic, so each tone needs the same few hertz removed. A fixed Q would widen with
+// frequency until, around 1 kHz, a 40 Hz-wide notch every 50 Hz would gut the band instead of
+// notching it. At 3 Hz the whole cascade costs 1.6 dB of snore while removing the buzz.
+const MAINS_BANDWIDTH_HZ = 3;
+
 // Clips arrive around -56 dBFS RMS. These bring them to about -30 dBFS with peaks near
 // -14 dBFS — a ~25 dB lift measured across three real clips with zero samples clipped.
 const PRE_GAIN = 26;
@@ -31,6 +57,10 @@ const MAKEUP_GAIN = 2.5;
 
 let context = null;
 let graph = null;
+
+// Clips already processed, keyed by their original URL. A failed clip maps to itself, so a
+// file that cannot be decoded is not retried on every play.
+const prepared = new Map();
 
 /** One shared context for the whole session — a per-playback context leaks, and browsers
  *  cap concurrent contexts at around six, after which playback fails outright. */
@@ -51,6 +81,17 @@ function buildGraph(source, ctx) {
   hissCut.type = 'lowpass';
   hissCut.frequency.value = HISS_HZ;
 
+  const mainsCuts = [];
+  for (let harmonic = 1; harmonic <= MAINS_HARMONICS; harmonic++) {
+    const hz = MAINS_HZ * harmonic;
+    if (hz >= ctx.sampleRate / 2 - 100) break;
+    const notch = ctx.createBiquadFilter();
+    notch.type = 'notch';
+    notch.frequency.value = hz;
+    notch.Q.value = hz / MAINS_BANDWIDTH_HZ;
+    mainsCuts.push(notch);
+  }
+
   const preGain = ctx.createGain();
   preGain.gain.value = PRE_GAIN;
 
@@ -68,7 +109,10 @@ function buildGraph(source, ctx) {
 
   source.connect(rumbleCut);
   rumbleCut.connect(hissCut);
-  hissCut.connect(preGain);
+  // chain the mains notches between the hiss cut and the gain stage
+  let tail = hissCut;
+  for (const notch of mainsCuts) { tail.connect(notch); tail = notch; }
+  tail.connect(preGain);
   preGain.connect(compressor);
   compressor.connect(makeup);
 
@@ -119,3 +163,46 @@ function resumeAudio() {
 }
 
 export { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext };
+
+/** Wrap samples as a 16-bit mono WAV so the existing <audio> element can play them. */
+function encodeWav(samples, rate) {
+  const bytes = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(bytes);
+  const ascii = (at, text) => { for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i)); };
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); ascii(8, 'WAVE');
+  ascii(12, 'fmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ascii(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, Math.round(s * 32767), true);
+  }
+  return new Blob([bytes], { type: 'audio/wav' });
+}
+
+/**
+ * Start removing the room from a clip. Called when a clip is selected rather than when play
+ * is pressed, so the work is finished by the time it is needed and play() can still be called
+ * straight out of the user's gesture — awaiting first would break autoplay policy.
+ */
+export function prepareClip(url) {
+  if (!url || prepared.has(url)) return;
+  const ctx = audioContext();
+  if (!ctx || !ctx.decodeAudioData) { prepared.set(url, url); return; }
+  prepared.set(url, url);   // fall back to the original until the real one is ready
+  fetch(url)
+    .then(response => response.arrayBuffer())
+    .then(bytes => ctx.decodeAudioData(bytes))
+    .then(decoded => {
+      const clean = removeRoomNoise(decoded.getChannelData(0));
+      prepared.set(url, URL.createObjectURL(encodeWav(clean, decoded.sampleRate)));
+    })
+    .catch(() => { /* keep the original; a clip that will not decode still plays */ });
+}
+
+/** The processed URL if it is ready, otherwise the original. Never blocks. */
+export function playableClip(url) {
+  return prepared.get(url) || url;
+}

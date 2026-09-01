@@ -635,6 +635,7 @@ class AudioCaptureService : Service() {
         candidate.peak = record.peak
         candidate.clip = clipPath
         candidate.f0 = record.meanF0
+        candidate.score = record.snoreScore
         return candidate
     }
 

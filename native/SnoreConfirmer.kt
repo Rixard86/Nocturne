@@ -33,6 +33,9 @@ class SnoreConfirmer {
     private val f0SpreadBelow = 90.0
     private val f0SpreadAbove = 120.0
 
+    // twoPeak needs 1 kHz energy this hardware does not capture, so 5 is the practical
+    // maximum of the six-point score, not 6.
+    private val certainScore = 5
     private val noConfirmedOnset = -100.0
     private val noPendingOnset = -1.0
 
@@ -43,6 +46,7 @@ class SnoreConfirmer {
         var peak = 0
         var clip = ""
         var f0 = 0.0
+        var score = 0
     }
 
     /** What the gate did, and which candidates it confirmed as a result. */
@@ -71,6 +75,15 @@ class SnoreConfirmer {
 
         if (isTrainGap(outcome.gapFromConfirmed)) {
             outcome.branch = "confirmed-by-train"
+            confirm(candidate, outcome)
+            return outcome
+        }
+        // A candidate carrying every point the classifier can award needs no partner. The
+        // pairing rule exists to reject lone voiced bursts, not to discard snores that are
+        // simply isolated - measured on a labelled night, 3 of 20 real snores were already
+        // classified `snore` and lost here for having nothing to pair with.
+        if (candidate.score >= certainScore) {
+            outcome.branch = "confirmed-alone"
             confirm(candidate, outcome)
             return outcome
         }

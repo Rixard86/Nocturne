@@ -1,4 +1,4 @@
-import { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext } from './audio-enhance.js';
+import { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext, prepareClip, playableClip } from './audio-enhance.js';
 import { drawTimelineReport } from './charts.js';
 import { S } from './state.js';
 import { $, toast } from './ui.js';
@@ -24,6 +24,11 @@ function loadPlayer(ev){
   // The enhancer only applies to real recorded audio, not the synthesized fallback.
   const enhWrap=$('ppEnhWrap');
   if(enhWrap) enhWrap.style.display = ev.clip ? 'flex' : 'none';
+  // Start removing the room from this clip now, while the user is still looking at it, so
+  // playback can begin straight from their tap without waiting on the analysis.
+  if(ev.clip){
+    try{ const C=window.Capacitor; prepareClip((C&&C.convertFileSrc)? C.convertFileSrc(ev.clip) : ev.clip); }catch(e){}
+  }
   const list=playerList();
   const idx=list.findIndex(x=>x.id===ev.id);
   if(list.length>1 && idx>=0){
@@ -67,7 +72,8 @@ function startPlayback(ev){
         wireAudioEl(S._audioEl);
         attachEnhancer(S._audioEl);
       }
-      if(S._audioEl.src!==src) S._audioEl.src=src;
+      const playable=playableClip(src);
+      if(S._audioEl.src!==playable) S._audioEl.src=playable;
       resumeAudio();   // contexts start suspended until a user gesture
       S._audioEl.play().then(()=>{ S._playing=true; setPlayIcon(true); }).catch(()=>{ synthPlayback(ev); });
       return;
