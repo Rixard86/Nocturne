@@ -1,5 +1,6 @@
 package com.nocturne.replay
 
+import com.nocturne.app.PauseDetector
 import java.io.File
 import java.util.Locale
 import kotlin.system.exitProcess
@@ -72,6 +73,18 @@ object RecordingReport {
         row("  reached classifier", t.classified)
         println()
         println(String.format(Locale.US, "  %-22s %6d", "confirmed snores", t.confirmedSnores))
+        println(String.format(Locale.US, "  %-22s %6d", "breathing pauses", t.pauses))
+        t.pauseRejects?.let { r ->
+            // A pause count of zero is uninformative on its own: it cannot distinguish a
+            // night without pauses from a gate quietly turning every candidate down.
+            println()
+            println("  silences turned down")
+            println(String.format(Locale.US, "      %-20s %6d", "shorter than min", r.tooShort))
+            println(String.format(Locale.US, "      %-20s %6d", "longer than max", r.tooLong))
+            println(String.format(Locale.US, "      %-20s %6d", "no snore before", r.noSnore))
+            println(String.format(Locale.US, "      %-20s %6d", "snore too far back", r.snoreTooFar))
+            println(String.format(Locale.US, "      %-20s %6d", "snore too short", r.snoreTooShort))
+        }
         println()
         println("  verdicts")
         for (entry in t.kinds.entries.sortedByDescending { it.value }) row("    " + entry.key, entry.value)

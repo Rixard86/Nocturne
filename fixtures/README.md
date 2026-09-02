@@ -83,3 +83,49 @@ agree, and no existing fixture can restore the comparison.
 **Restoring it needs one night recorded with current code and raw capture armed.** Until
 then the audio path is exercised but unverified against a known-good reference, which
 matters because feature-level detector changes can only be measured through it.
+
+## night-2026-09-02-baseline.jsonl
+
+**The first night recorded with current code, and the first with raw audio.** 4.94 h,
+177,932 reads, 3,944 episodes, 1,067 confirmed snores, 0 breathing pauses. Anchored:
+the log opens with `{"e":"start","startMs":...}`, so every event has an absolute time.
+
+The raw `night.wav` is 313 MB and is NOT in the repo. It is what makes the audio replay
+below reproducible, so keep a copy if you want to re-run it.
+
+### The audio replay reproduces the phone exactly
+
+    npm run replay -- night.wav
+
+    reads 177932 | episodes 3944 | classified 1288
+    confirmed snores 1067   (phone recorded 1067)
+    verdicts: snore 1187, other 101   (phone: snore 1187, other 101)
+
+Every figure matches what the phone produced. This is the fidelity check the quiet-room
+fixture used to provide and could no longer: a recording replays as the phone actually ran.
+
+### The log replay does not, and that is expected
+
+    npm run replay -- fixtures/night-2026-09-02-baseline.jsonl
+    verdict reproduced 1286/1288, confirmed 998 replayed vs 1067 logged
+
+Only 11 episodes diverge, but they cost 69 confirmations: features are logged to three
+decimals and F0 to one, and the rhythm gate pairs candidates, so a handful of episodes
+landing on the other side of a threshold changes which candidates pair up and cascades.
+Prefer the audio replay when the number has to be exact.
+
+### Pause coverage
+
+The harness now drives `PauseDetector`, the same class the service uses, and prints why
+silences were turned down. On this night:
+
+    breathing pauses 0
+      shorter than min    16742
+      longer than max         0
+      no snore before         0
+      snore too far back     31
+      snore too short         0
+
+31 silences cleared the 9 s bar and every one was rejected because no confirmed snore ended
+within 20 s of it. That is the difference between "this night had no pauses" and "a gate
+turned them all down", which a bare zero cannot tell you.

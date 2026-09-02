@@ -16,6 +16,7 @@ const DETECTOR_SOURCES = [
   join('native', 'SnoreVerdict.kt'),
   join('native', 'SnoreConfirmer.kt'),
   join('native', 'EpisodeSegmenter.kt'),
+  join('native', 'PauseDetector.kt'),
   join('native', 'RawCapture.kt'),
 ];
 

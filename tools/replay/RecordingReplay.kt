@@ -1,6 +1,7 @@
 package com.nocturne.replay
 
 import com.nocturne.app.EpisodeSegmenter
+import com.nocturne.app.PauseDetector
 import com.nocturne.app.SnoreConfirmer
 import com.nocturne.app.SnoreVerdict
 import java.util.Locale
@@ -11,6 +12,8 @@ class RecordingTotals {
     var episodes = 0
     var classified = 0
     var confirmedSnores = 0
+    var pauses = 0
+    var pauseRejects: PauseDetector.Rejects? = null
     val kinds = LinkedHashMap<String, Int>()
     val episodeLines = ArrayList<String>()
     val confirmedOnsets = ArrayList<Double>()
@@ -27,6 +30,7 @@ class RecordingReplay {
 
     private val segmenter = EpisodeSegmenter()
     private val confirmer = SnoreConfirmer()
+    private val pauses = PauseDetector()
 
     fun run(recording: Recording): RecordingTotals {
         val totals = RecordingTotals()
@@ -35,17 +39,23 @@ class RecordingReplay {
         val read = Recording.Read()
         val chunk = EpisodeSegmenter.Chunk()
         chunk.decimated = recording.decimated
+        var lastAtMs = 0L
         while (recording.next(read)) {
+            lastAtMs = read.atMs.toLong()
             totals.chunks++
             totals.seconds = read.atMs / 1000.0
             chunk.samples = read.samples
             chunk.length = read.count
             chunk.atMs = read.atMs.toLong()
             chunk.amp = read.amp
-            segmenter.accept(chunk).finalized?.let { take(it, totals) }
+            val reading = segmenter.accept(chunk)
+            reading.finalized?.let { take(it, totals) }
+            if (pauses.observe(reading, read.atMs.toLong()) != null) totals.pauses++
         }
         segmenter.flush()?.let { take(it, totals) }
+        if (pauses.flush(lastAtMs, true) != null) totals.pauses++
         totals.confirmedSnores = confirmer.confirmedCount
+        totals.pauseRejects = pauses.rejects
         return totals
     }
 
@@ -65,7 +75,11 @@ class RecordingReplay {
         totals.episodeLines.add(describe(episode, kind))
         if (kind == SnoreVerdict.SNORE) {
             val outcome = confirmer.offer(candidate(episode, decision.snoreScore))
-            for (snore in outcome.confirmed) totals.confirmedOnsets.add(snore.onset)
+            for (snore in outcome.confirmed) {
+                totals.confirmedOnsets.add(snore.onset)
+                // only a confirmed snore arms the pause gate, exactly as the service does
+                pauses.noteConfirmedSnore(((snore.onset + snore.durSec) * 1000).toLong(), snore.durSec)
+            }
         }
     }
 
