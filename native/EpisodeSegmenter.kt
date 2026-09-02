@@ -21,7 +21,13 @@ class EpisodeSegmenter {
 
     companion object {
         const val MIN_EPISODE_DUR_SEC = 0.35   // shorter than this is a breath blip, not a snore
-        const val MIN_EPISODE_PEAK = 20        // must reach ~2x the room floor to be a snore
+        // The episode gate, in the units it actually means: amplitude relative to the room
+        // floor. It used to be written as a display level (20), which quietly tied detection
+        // sensitivity to LEVEL_SPAN - widening the display scale from 14 to 60 would have
+        // moved this gate from 1.70x to 2.27x without anyone editing a detection constant.
+        // 1.69522 is the exact ratio that level 20 meant at LEVEL_SPAN 14, so nothing about
+        // detection changes here; only what the number depends on.
+        const val MIN_EPISODE_RATIO = 1.69522   // 4.6 dB over the floor
         private const val CALIBRATION_MS = 4000L
         // Quiet allowed inside one continuous episode. This must stay well BELOW the
         // inter-breath pause (typically 1.5-3.5 s) or consecutive snores merge into a single
@@ -73,6 +79,7 @@ class EpisodeSegmenter {
         var onset = 0.0
         var durSec = 0.0
         var peak = 0
+        var peakRatio = 0.0
         var baseline = 0.0
         var frames = 0
         var forced = false
@@ -93,6 +100,7 @@ class EpisodeSegmenter {
     private var epStartMs = 0L
     private var epLastActiveMs = 0L
     private var epPeak = 0
+    private var epPeakRatio = 0.0
 
     private val classifier = AcousticFeatures.EpisodeClassifier()
     private val frameBuf = ArrayList<Double>(AcousticFeatures.FRAME_FFT * 3)
@@ -169,12 +177,14 @@ class EpisodeSegmenter {
                 epStartMs = now
                 epLastActiveMs = now
                 epPeak = reading.level
+                epPeakRatio = reading.ratio
                 classifier.reset()
                 frameBuf.clear()
                 reading.episodeStarted = true
             } else {
                 epLastActiveMs = now
                 if (reading.level > epPeak) epPeak = reading.level
+                if (reading.ratio > epPeakRatio) epPeakRatio = reading.ratio
             }
         }
         if (epActive) analyse(chunk)
@@ -207,6 +217,7 @@ class EpisodeSegmenter {
         ep.onset = (epStartMs - startMs) / 1000.0
         ep.durSec = (epLastActiveMs - epStartMs) / 1000.0
         ep.peak = epPeak
+        ep.peakRatio = epPeakRatio
         ep.baseline = baseline
         ep.frames = classifier.frameCount
         ep.forced = forced

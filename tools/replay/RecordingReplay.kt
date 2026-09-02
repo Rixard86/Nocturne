@@ -62,7 +62,7 @@ class RecordingReplay {
     private fun take(episode: EpisodeSegmenter.Episode, totals: RecordingTotals) {
         totals.episodes++
         if (episode.durSec <= EpisodeSegmenter.MIN_EPISODE_DUR_SEC) return
-        if (episode.peak < EpisodeSegmenter.MIN_EPISODE_PEAK) return
+        if (episode.peakRatio < EpisodeSegmenter.MIN_EPISODE_RATIO) return
         val features = episode.features ?: return
         totals.classified++
         val decision = SnoreVerdict.decide(features, confirmer.band)

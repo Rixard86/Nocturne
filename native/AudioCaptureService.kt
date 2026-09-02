@@ -592,7 +592,7 @@ class AudioCaptureService : Service() {
 
         if (episode.durSec <= EpisodeSegmenter.MIN_EPISODE_DUR_SEC) {
             record.reject = EpisodeLog.REASON_SHORT
-        } else if (episode.peak < EpisodeSegmenter.MIN_EPISODE_PEAK) {
+        } else if (episode.peakRatio < EpisodeSegmenter.MIN_EPISODE_RATIO) {
             record.reject = EpisodeLog.REASON_QUIET
         } else {
             // classify using the (possibly calibrated) per-user F0 band
