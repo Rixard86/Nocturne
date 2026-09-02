@@ -129,3 +129,20 @@ silences were turned down. On this night:
 31 silences cleared the 9 s bar and every one was rejected because no confirmed snore ended
 within 20 s of it. That is the difference between "this night had no pauses" and "a gate
 turned them all down", which a bare zero cannot tell you.
+
+## Pause baselines changed 2026-09-02 (SILENCE_FACTOR 1.2 -> 1.4)
+
+Raising the silence threshold above the floor's own noise changed what the pause path
+finds. Snore figures are unaffected everywhere.
+
+| fixture | pauses before | pauses after |
+|---|---|---|
+| night-2026-09-02 (night.wav) | 0 | **10**, including the human-confirmed one at 4482s |
+| quiet-room-2026-08-30/night.wav | 0 | **1** |
+
+**The quiet-room pause is a false positive, and a useful one to keep.** That fixture is 171
+seconds of a deliberately near-silent room containing one snore-ish event, so a "pause" in it
+is an artefact of there being nothing to hear rather than of breathing stopping. It is a
+standing reminder that the pause gates cannot distinguish "stopped breathing" from "was never
+audible in the first place" - the reason placement matters so much, and the reason a pause
+count from a night with a weak signal should not be trusted.
