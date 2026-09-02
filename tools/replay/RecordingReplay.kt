@@ -13,6 +13,7 @@ class RecordingTotals {
     var classified = 0
     var confirmedSnores = 0
     var pauses = 0
+    val pauseOnsets = ArrayList<Double>()
     var pauseRejects: PauseDetector.Rejects? = null
     val kinds = LinkedHashMap<String, Int>()
     val episodeLines = ArrayList<String>()
@@ -50,10 +51,16 @@ class RecordingReplay {
             chunk.amp = read.amp
             val reading = segmenter.accept(chunk)
             reading.finalized?.let { take(it, totals) }
-            if (pauses.observe(reading, read.atMs.toLong()) != null) totals.pauses++
+            pauses.observe(reading, read.atMs.toLong())?.let {
+                totals.pauses++
+                totals.pauseOnsets.add(it.startMs / 1000.0)
+            }
         }
         segmenter.flush()?.let { take(it, totals) }
-        if (pauses.flush(lastAtMs, true) != null) totals.pauses++
+        pauses.flush(lastAtMs, true)?.let {
+            totals.pauses++
+            totals.pauseOnsets.add(it.startMs / 1000.0)
+        }
         totals.confirmedSnores = confirmer.confirmedCount
         totals.pauseRejects = pauses.rejects
         return totals

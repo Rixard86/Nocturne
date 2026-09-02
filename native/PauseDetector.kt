@@ -16,7 +16,15 @@ package com.nocturne.app
 class PauseDetector {
 
     companion object {
-        const val SILENCE_FACTOR = 1.2      // amp below baseline x this counts as true silence
+        // Amplitude below the floor x this counts as true silence. 1.2x is only 1.6 dB, which
+        // sits inside the noise of the floor estimate itself, so ordinary jitter kept ending
+        // silences that had not ended. Measured on the one human-confirmed pause of the
+        // 2026-09-02 night: the snore before it read 13.0x the floor and the recovery breath
+        // 15.4x, while the five interruptions that fragmented the 11.9 s gap read 1.22x to
+        // 1.37x. The threshold sat in the wrong part of a 10x separation. At 1.4x (2.9 dB)
+        // that pause is detected with no transient tolerance needed, and the night yields 10
+        // candidates rather than the 35 a 500 ms tolerance produced.
+        const val SILENCE_FACTOR = 1.4
         const val MIN_PAUSE_SEC = 9.0
         const val MAX_PAUSE_SEC = 60.0
         const val MIN_SNORE_BEFORE_SEC = 2.0

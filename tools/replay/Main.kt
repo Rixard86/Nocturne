@@ -74,6 +74,11 @@ object RecordingReport {
         println()
         println(String.format(Locale.US, "  %-22s %6d", "confirmed snores", t.confirmedSnores))
         println(String.format(Locale.US, "  %-22s %6d", "breathing pauses", t.pauses))
+        // A pause count alone cannot be checked against anything; the onsets let a run be
+        // lined up with a labelled clip, or with a wearable's night.
+        if (t.pauseOnsets.isNotEmpty()) {
+            println("      at " + t.pauseOnsets.joinToString(", ") { String.format(Locale.US, "%.0fs", it) })
+        }
         t.pauseRejects?.let { r ->
             // A pause count of zero is uninformative on its own: it cannot distinguish a
             // night without pauses from a gate quietly turning every candidate down.
