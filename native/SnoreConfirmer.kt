@@ -44,6 +44,7 @@ class SnoreConfirmer {
         var onset = 0.0
         var durSec = 0.0
         var peak = 0
+        var peakRatio = 0.0
         var clip = ""
         var f0 = 0.0
         var score = 0

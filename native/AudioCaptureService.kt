@@ -586,6 +586,7 @@ class AudioCaptureService : Service() {
         record.onset = episode.onset + sessionOffsetSec
         record.durSec = episode.durSec
         record.peak = episode.peak
+        record.peakRatio = episode.peakRatio
         record.baseline = episode.baseline
         record.frames = episode.frames
         var features: SnoreVerdict.Features? = null
@@ -653,6 +654,7 @@ class AudioCaptureService : Service() {
         candidate.onset = record.onset
         candidate.durSec = record.durSec
         candidate.peak = record.peak
+        candidate.peakRatio = record.peakRatio
         candidate.clip = clipPath
         candidate.f0 = record.meanF0
         candidate.score = record.snoreScore
@@ -667,8 +669,8 @@ class AudioCaptureService : Service() {
 
     private fun emitConfirmedSnore(snore: SnoreConfirmer.Candidate) {
         snoreCount++
-        NocturnePlugin.emitSnore(snore.onset, snore.durSec, snore.peak, snoreCount, snore.clip)
-        appendSessionEvent("{\"e\":\"snore\",\"t\":${"%.1f".format(Locale.US, snore.onset)},\"dur\":${"%.2f".format(Locale.US, snore.durSec)},\"lvl\":${snore.peak},\"count\":$snoreCount,\"clip\":${jsonStr(snore.clip)}}")
+        NocturnePlugin.emitSnore(snore, snoreCount)
+        appendSessionEvent("{\"e\":\"snore\",\"t\":${"%.1f".format(Locale.US, snore.onset)},\"dur\":${"%.2f".format(Locale.US, snore.durSec)},\"lvl\":${snore.peak},\"pr\":${"%.2f".format(Locale.US, snore.peakRatio)},\"count\":$snoreCount,\"clip\":${jsonStr(snore.clip)}}")
         pauseDetector.noteConfirmedSnore(elapsedAtNightSecond(snore.onset + snore.durSec), snore.durSec)
     }
 

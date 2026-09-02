@@ -78,7 +78,7 @@ async function startNative(plugin){
   });
   await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, lvl:e.level}); });
   await add('nocturneSnore', e=>{
-    S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, kind:'snore', clip:e.clip||''});
+    S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, ratio:e.ratio||0, kind:'snore', clip:e.clip||''});
     $('lsSnore').textContent=e.count;
   });
   await add('nocturneSound', e=>{
@@ -131,7 +131,7 @@ function rebuildFromLog(events){
   for(const ev of (events||[])){
     switch(ev.e){
       case 'sample': rebuilt.samples.push({t:ev.t, amp:ev.amp, lvl:ev.lvl}); break;
-      case 'snore': rebuilt.events.push({id:'e'+rebuilt.events.length, t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:'snore', clip:ev.clip||''}); break;
+      case 'snore': rebuilt.events.push({id:'e'+rebuilt.events.length, t:ev.t, dur:ev.dur, lvl:ev.lvl, ratio:ev.pr||0, kind:'snore', clip:ev.clip||''}); break;
       case 'sound': rebuilt.sounds.push({t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:ev.kind}); break;
       case 'pause': rebuilt.pauses.push({t:ev.t, dur:ev.dur, clip:ev.clip||''}); break;
     }
@@ -230,7 +230,7 @@ async function resumeNativeListeners(plugin){
   const add=async (name,fn)=>{ const h=await plugin.addListener(name,fn); nativeListeners.push(h); };
   await add('nocturneState', e=>{ if(e.state==='listening'){ S.calibrating=false; S.baseline=e.baseline||S.baseline; } else if(e.state==='stopped'||e.state==='auto-stopped'){ if(S.recording){ stopNative(); if(e.state==='auto-stopped') toast('Recording auto-stopped after 12 hours.'); } } });
   await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, lvl:e.level}); });
-  await add('nocturneSnore', e=>{ S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, kind:'snore', clip:e.clip||''}); $('lsSnore').textContent=e.count; });
+  await add('nocturneSnore', e=>{ S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, ratio:e.ratio||0, kind:'snore', clip:e.clip||''}); $('lsSnore').textContent=e.count; });
   await add('nocturneSound', e=>{ S.sounds.push({t:e.t, dur:e.dur, lvl:e.level, kind:e.kind}); });
   await add('nocturnePause', e=>{ S.pauses.push({t:e.t, dur:e.dur, clip:e.clip||''}); $('lsPause').textContent=e.count; });
   await add('nocturneLevel', e=>{ noteHeartbeat(); setNativeAmp((e.level||0)/100*0.2); if(e.baseline!=null) S._liveBase=e.baseline; $('levelVal').textContent=e.level; $('lsElapsed').textContent=fmtDur(e.elapsed||0); $('haloSub').textContent=e.snoring?'Snoring detected':'Breathing steady'; });

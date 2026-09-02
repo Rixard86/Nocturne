@@ -55,8 +55,13 @@ class NocturnePlugin : Plugin() {
         fun emitSample(t: Double, amp: Double, level: Int) {
             emit("nocturneSample", JSObject().put("t", t).put("amp", amp).put("level", level))
         }
-        fun emitSnore(t: Double, dur: Double, level: Int, count: Int, clipPath: String = "") {
-            emit("nocturneSnore", JSObject().put("t", t).put("dur", dur).put("level", level).put("count", count).put("clip", clipPath))
+        // Takes the candidate rather than five loose values: it already carries them, and
+        // `ratio` is the true loudness over the room floor, which `level` caps at 100.
+        fun emitSnore(snore: SnoreConfirmer.Candidate, count: Int) {
+            emit("nocturneSnore", JSObject()
+                .put("t", snore.onset).put("dur", snore.durSec)
+                .put("level", snore.peak).put("ratio", snore.peakRatio)
+                .put("count", count).put("clip", snore.clip))
         }
         fun emitSound(t: Double, dur: Double, level: Int, kind: String, count: Int) {
             emit("nocturneSound", JSObject().put("t", t).put("dur", dur).put("level", level).put("kind", kind).put("count", count))

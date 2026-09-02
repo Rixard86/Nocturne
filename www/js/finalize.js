@@ -72,6 +72,11 @@ function finalize(isDemo){
     // is startMs + t*1000. Correlating a night against a wearable needs that anchor: both
     // sides are then plain epoch milliseconds, with no timezone to get wrong.
     startMs:S.startTime,
+    // The night's true loudest moment, as amplitude over the room floor. `peakLvl` is a
+    // display level that saturates at 100 - measured on one night, 14.7% of confirmed
+    // snores sat at exactly 100 while the real spread ran to 50 dB. Keeping the raw ratio
+    // lets the report scale to what actually happened instead of to a fixed ceiling.
+    peakRatio:S.events.reduce((m,e)=>Math.max(m, e.ratio||0), 0),
     date:new Date(),
     score, band:band(score).name,
     durationSec:total,

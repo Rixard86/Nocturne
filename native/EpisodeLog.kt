@@ -38,6 +38,9 @@ object EpisodeLog {
             .append(",\"t\":").append(num(episode.onset, 1))
             .append(",\"dur\":").append(num(episode.durSec, 2))
             .append(",\"peak\":").append(episode.peak)
+            // The true amplitude over the room floor. `peak` is a display level that stops
+            // at 100, which on a real night flattens every loud snore into one number.
+            .append(",\"pr\":").append(num(episode.peakRatio, 2))
             .append(",\"base\":").append(String.format(Locale.US, "%.3e", episode.baseline))
             .append(",\"frames\":").append(episode.frames)
             .append(",\"kind\":\"").append(episode.kind).append("\"")
@@ -89,6 +92,7 @@ object EpisodeLog {
         var onset = 0.0
         var durSec = 0.0
         var peak = 0
+        var peakRatio = 0.0
         var baseline = 0.0
         var frames = 0
         var kind = "none"

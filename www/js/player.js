@@ -14,7 +14,8 @@ function loadPlayer(ev){
   if($('tl')) drawTimelineReport(); // redraw so the marker moves to this event
   const hh=Math.floor(ev.t/3600), mm=Math.floor((ev.t%3600)/60);
   $('ppTitle').textContent = ev.kind==='pause' ? 'Breathing-pause pattern' : 'Snore event';
-  $('ppSub').textContent = `${hh}h ${String(mm).padStart(2,'0')}m · ${ev.kind==='pause'?Math.round(ev.dur)+'s silent gap':ev.dur.toFixed(1)+'s · level '+(ev.lvl||0)}`;
+  const loud=eventLoudness(ev);
+  $('ppSub').textContent = `${hh}h ${String(mm).padStart(2,'0')}m · ${ev.kind==='pause'?Math.round(ev.dur)+'s silent gap':ev.dur.toFixed(1)+'s · level '+loud.level+(loud.db!=null?' · '+loud.db.toFixed(0)+' dB':'')}`;
   const tag=$('ppTag');
   if(ev.kind==='pause'){tag.style.display='';tag.textContent='PAUSE';tag.style.background='rgba(245,182,96,.2)';tag.style.color='#F5B660';}
   else if((ev.lvl||0)>65){tag.style.display='';tag.textContent='LOUD';tag.style.background='rgba(124,124,240,.2)';tag.style.color='#7C7CF0';}
@@ -76,6 +77,26 @@ function swapClipSource(){
     if(wasPlaying) S._audioEl.play().catch(()=>{});
   },{once:true});
   S._audioEl.src=next;
+}
+
+/**
+ * Loudness for display, scaled to the night's own range instead of a fixed ceiling.
+ *
+ * The stored `lvl` saturates: it reaches 100 at 14x the room floor, and measured on a real
+ * night 14.7% of confirmed snores sat at exactly 100 while the true spread ran on to 350x.
+ * Every loud moment therefore looked equally loud. Normalising against the night's own peak
+ * spreads them back out, and the dB figure is the absolute number that does not move with
+ * whichever night is being viewed.
+ *
+ * Nights recorded before the ratio was stored have no `ratio`, so they keep their old level.
+ */
+function eventLoudness(ev){
+  const night=S.current;
+  const peak=(night && night.peakRatio) || 0;
+  const ratio=ev.ratio||0;
+  if(ratio<=1 || peak<=1) return {level:ev.lvl||0, db:null};
+  const scaled=Math.log(Math.min(ratio,peak))/Math.log(peak)*100;
+  return {level:Math.max(0,Math.min(100,Math.round(scaled))), db:20*Math.log10(ratio)};
 }
 
 // unified play/pause entry point
