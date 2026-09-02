@@ -53,6 +53,31 @@ function setSeek(frac){
   if(k) k.style.left=(frac*100)+'%';
 }
 
+// Clarify governs BOTH stages of cleanup, not just the filter chain. The room removal runs
+// at clip load and swaps in a processed blob, so leaving the source alone meant "off" still
+// played denoised audio with the biquads bypassed - never the recording as captured.
+function clipSource(src){
+  return isEnhanced() ? playableClip(src) : src;
+}
+
+/** Re-point the element at the raw or processed clip, keeping position and play state. */
+function swapClipSource(){
+  const ev=S._curEv;
+  if(!ev || !ev.clip || !S._audioEl) return;
+  const C=window.Capacitor;
+  const src=(C && C.convertFileSrc)? C.convertFileSrc(ev.clip) : ev.clip;
+  const next=clipSource(src);
+  if(S._audioEl.src===next) return;
+  const at=S._audioEl.currentTime||0;
+  const wasPlaying=S._playing;
+  // currentTime cannot be set until the new source reports a duration
+  S._audioEl.addEventListener('loadedmetadata',()=>{
+    try{ S._audioEl.currentTime=Math.min(at, S._audioEl.duration||at); }catch(e){}
+    if(wasPlaying) S._audioEl.play().catch(()=>{});
+  },{once:true});
+  S._audioEl.src=next;
+}
+
 // unified play/pause entry point
 function togglePlay(){
   if(!S._curEv){ const l=playerList(); if(l.length) loadPlayer(l[0]); else return; }
@@ -72,7 +97,7 @@ function startPlayback(ev){
         wireAudioEl(S._audioEl);
         attachEnhancer(S._audioEl);
       }
-      const playable=playableClip(src);
+      const playable=clipSource(src);
       if(S._audioEl.src!==playable) S._audioEl.src=playable;
       resumeAudio();   // contexts start suspended until a user gesture
       S._audioEl.play().then(()=>{ S._playing=true; setPlayIcon(true); }).catch(()=>{ synthPlayback(ev); });
@@ -149,9 +174,16 @@ function stepPlayer(dir){
 
 function wirePlayer(){
   const enh=$('ppEnh');
+  // The markup is re-rendered with the button always showing "on", so reflect the real
+  // state here or the label drifts out of step with what is actually being played.
+  if(enh){
+    enh.classList.toggle('on', isEnhanced());
+    enh.setAttribute('aria-pressed', String(isEnhanced()));
+  }
   if(enh) enh.onclick=()=>{
     const on=!isEnhanced();
     setEnhanced(on);
+    swapClipSource();
     enh.classList.toggle('on', on);
     enh.setAttribute('aria-pressed', String(on));
     toast(on?'Audio clarified':'Original audio');

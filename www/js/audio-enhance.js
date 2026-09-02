@@ -134,7 +134,9 @@ function attachEnhancer(el) {
     graph = buildGraph(source, ctx);
     graph.ctx = ctx;
     graph.enabled = false;
-    setEnhanced(true);
+    // Apply what the user asked for, not an unconditional on. The graph is not built until
+    // the first play, so a toggle pressed before then would otherwise be silently undone.
+    setEnhanced(enhanceWanted);
     return true;
   } catch (e) {
     graph = null;
@@ -142,8 +144,14 @@ function attachEnhancer(el) {
   }
 }
 
+// What the user has asked for, held separately from the graph because the graph does not
+// exist until the first playback. isEnhanced() reports this intent so the button, the clip
+// source and the filter chain cannot disagree.
+let enhanceWanted = true;
+
 /** Switch between the processed chain and a clean bypass. */
 function setEnhanced(on) {
+  enhanceWanted = on;
   if (!graph) return;
   const { makeup, bypass, ctx } = graph;
   try { makeup.disconnect(); } catch (e) {}
@@ -154,7 +162,7 @@ function setEnhanced(on) {
 }
 
 function isEnhanced() {
-  return !!(graph && graph.enabled);
+  return enhanceWanted;
 }
 
 /** Browsers start contexts suspended until a user gesture; call this from the play handler. */
