@@ -31,8 +31,12 @@
   #view-record.active{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;position:relative}
   /* halo is a full-bleed background layer for the record screen so its soft glow washes
      the whole background instead of being clipped to a box. Content sits above it. */
+  /* Height is stated, not left to `auto`. A canvas is a replaced element, so `height:auto`
+     resolves to the bitmap's aspect ratio rather than stretching between top and bottom -
+     and sizeHalo() sets that bitmap from the resulting height, so it settled at a stable but
+     wrong 150px band that clipped every ring below the readout. */
   #view-record > canvas#halo{position:absolute;z-index:0;pointer-events:none;
-    top:-70px;bottom:-50px;left:50%;width:100vw;height:auto;transform:translateX(-50%)}
+    top:-70px;height:calc(100% + 120px);left:50%;width:100vw;transform:translateX(-50%)}
   #view-record > *:not(#halo){position:relative;z-index:1}
   .halo-wrap{position:relative;flex:1 1 auto;min-height:180px;max-height:300px;display:flex;align-items:center;justify-content:center;margin-top:4px}
   @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
