@@ -52,8 +52,12 @@ class NocturnePlugin : Plugin() {
         fun emitLevel(level: Int, snoring: Boolean, elapsed: Double, baseline: Double) {
             emit("nocturneLevel", JSObject().put("level", level).put("snoring", snoring).put("elapsed", elapsed).put("baseline", baseline))
         }
-        fun emitSample(t: Double, amp: Double, level: Int) {
-            emit("nocturneSample", JSObject().put("t", t).put("amp", amp).put("level", level))
+        // Carries the floor as well as the amplitude: "loud" is a ratio between the two, and
+        // deriving it from `level` instead means re-deriving the level scale on the web side.
+        fun emitSample(reading: EpisodeSegmenter.Reading, t: Double) {
+            emit("nocturneSample", JSObject()
+                .put("t", t).put("amp", reading.amp)
+                .put("base", reading.baseline).put("level", reading.level))
         }
         // Takes the candidate rather than five loose values: it already carries them, and
         // `ratio` is the true loudness over the room floor, which `level` caps at 100.

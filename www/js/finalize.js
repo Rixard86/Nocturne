@@ -8,6 +8,16 @@ import { band } from './ui.js';
 /* ============================================================
    FINALIZE — compute score & build the night object
    ============================================================ */
+// Samples recorded before the floor was kept alongside the amplitude have only a level, so
+// they still need the old conversion. LEVEL_SPAN mirrors EpisodeSegmenter's constant; it is
+// used for nothing else, and nothing new depends on it.
+const LEGACY_LEVEL_SPAN = 14;
+const LEGACY_MIN_LOUD_LEVEL = 6;
+
+function legacyLoudLevel(ratio){
+  return Math.max(LEGACY_MIN_LOUD_LEVEL, Math.round(Math.log2(ratio)/Math.log2(LEGACY_LEVEL_SPAN)*100));
+}
+
 function finalize(isDemo){
   // flush a snore episode still open at stop time (web path) so it isn't lost
   if(!isDemo && S.snoreEp){
@@ -32,8 +42,13 @@ function finalize(isDemo){
   // native path, where the detector's baseline adapts all night while JS kept the
   // stale calibration value — producing 0% snoring despite hundreds of events.)
   const ratio = isDemo? 2.0 : snoreRatio();
-  const loudLvl = Math.max(6, Math.round(Math.log2(ratio)/Math.log2(14)*100));
-  const loudSamples = S.samples.filter(s=>(s.lvl||0) >= loudLvl);
+  // "Loud" means amplitude over the room floor, which is exactly what `ratio` already is,
+  // so compare the two directly. This used to convert the ratio into a display level with a
+  // hardcoded copy of the native LEVEL_SPAN - a second place that had to be edited in step
+  // with a constant in Kotlin, and a lossy round trip: the level is truncated to an integer,
+  // which misfiled 35 of 16,591 samples on a measured night.
+  const loudSamples = S.samples.filter(s=>
+    s.base > 0 ? (s.amp / s.base) >= ratio : (s.lvl || 0) >= legacyLoudLevel(ratio));
   const nSamples = S.samples.length || 1;
   // Each sample is one equal time-slice (live=1s, demo=60s), so the fraction of loud
   // samples IS the fraction of the night spent snoring — no per-sample-seconds needed.

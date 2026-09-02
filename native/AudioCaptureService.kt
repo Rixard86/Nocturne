@@ -424,7 +424,7 @@ class AudioCaptureService : Service() {
             // downsampled ~1s sample for the timeline
             if (lastSampleMs == 0L || now - lastSampleMs > 1000) {
                 lastSampleMs = now
-                NocturnePlugin.emitSample(elapsed, reading.amp, reading.level)
+                NocturnePlugin.emitSample(reading, elapsed)
                 // Scientific notation: a quiet room on a low-gain path idles near 1e-5,
                 // where %.5f rounds everything to a single significant figure and hides
                 // exactly the detail needed to tell a tracking floor from a clamped one.

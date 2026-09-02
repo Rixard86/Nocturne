@@ -128,7 +128,7 @@ function loop(){
 
   // store a downsampled sample every ~1s
   if(!S._lastSamp || now-S._lastSamp>1000){
-    S.samples.push({t:elapsed, amp, lvl});
+    S.samples.push({t:elapsed, amp, base:S.baseline||0, lvl});
     S._lastSamp=now;
     drawTimelineLive();
   }

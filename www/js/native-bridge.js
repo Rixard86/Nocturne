@@ -76,7 +76,7 @@ async function startNative(plugin){
       if(S.recording){ stopNative(); if(e.state==='auto-stopped') toast('Recording auto-stopped after 12 hours.'); }
     }
   });
-  await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, lvl:e.level}); });
+  await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, base:e.base||0, lvl:e.level}); });
   await add('nocturneSnore', e=>{
     S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, ratio:e.ratio||0, kind:'snore', clip:e.clip||''});
     $('lsSnore').textContent=e.count;
@@ -130,7 +130,7 @@ function rebuildFromLog(events){
   const rebuilt={ samples:[], events:[], sounds:[], pauses:[] };
   for(const ev of (events||[])){
     switch(ev.e){
-      case 'sample': rebuilt.samples.push({t:ev.t, amp:ev.amp, lvl:ev.lvl}); break;
+      case 'sample': rebuilt.samples.push({t:ev.t, amp:ev.amp, base:ev.base||0, lvl:ev.lvl}); break;
       case 'snore': rebuilt.events.push({id:'e'+rebuilt.events.length, t:ev.t, dur:ev.dur, lvl:ev.lvl, ratio:ev.pr||0, kind:'snore', clip:ev.clip||''}); break;
       case 'sound': rebuilt.sounds.push({t:ev.t, dur:ev.dur, lvl:ev.lvl, kind:ev.kind}); break;
       case 'pause': rebuilt.pauses.push({t:ev.t, dur:ev.dur, clip:ev.clip||''}); break;
@@ -229,7 +229,7 @@ async function resumeNativeListeners(plugin){
   $('recHint').textContent='Recording. You can lock the screen — Nocturne keeps listening in the background. Tap stop when you wake.';
   const add=async (name,fn)=>{ const h=await plugin.addListener(name,fn); nativeListeners.push(h); };
   await add('nocturneState', e=>{ if(e.state==='listening'){ S.calibrating=false; S.baseline=e.baseline||S.baseline; } else if(e.state==='stopped'||e.state==='auto-stopped'){ if(S.recording){ stopNative(); if(e.state==='auto-stopped') toast('Recording auto-stopped after 12 hours.'); } } });
-  await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, lvl:e.level}); });
+  await add('nocturneSample', e=>{ S.samples.push({t:e.t, amp:e.amp, base:e.base||0, lvl:e.level}); });
   await add('nocturneSnore', e=>{ S.events.push({id:'e'+S.events.length, t:e.t, dur:e.dur, lvl:e.level, ratio:e.ratio||0, kind:'snore', clip:e.clip||''}); $('lsSnore').textContent=e.count; });
   await add('nocturneSound', e=>{ S.sounds.push({t:e.t, dur:e.dur, lvl:e.level, kind:e.kind}); });
   await add('nocturnePause', e=>{ S.pauses.push({t:e.t, dur:e.dur, clip:e.clip||''}); $('lsPause').textContent=e.count; });
