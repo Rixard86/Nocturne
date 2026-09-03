@@ -57,10 +57,23 @@ class Recording {
     private var readSamples = 0
     private var readIndex = 0
 
+    /**
+     * The sidecar belonging to THIS audio file: `foo.wav` takes `foo.chunks` when it exists,
+     * and only then falls back to the plain `night.chunks` a phone pull produces.
+     *
+     * The fallback used to be the only rule, which silently paired one night's audio with
+     * another night's amplitudes as soon as a second recording was kept alongside it - the
+     * replay ran, reported confident numbers, and every one of them was wrong.
+     */
+    private fun sidecarFor(audioFile: File, dir: File): File {
+        val named = File(dir, audioFile.name.substringBeforeLast('.') + ".chunks")
+        return if (named.isFile) named else File(dir, RawCapture.SIDECAR_NAME)
+    }
+
     /** Returns null on success, or a human-readable reason the recording cannot be read. */
     fun open(audioFile: File): String? {
         val dir = audioFile.parentFile ?: File(".")
-        val sidecarFile = File(dir, RawCapture.SIDECAR_NAME)
+        val sidecarFile = sidecarFor(audioFile, dir)
         val stream = DataInputStream(BufferedInputStream(FileInputStream(audioFile)))
         val header = ByteArray(WAV_HEADER_BYTES)
         stream.readFully(header)

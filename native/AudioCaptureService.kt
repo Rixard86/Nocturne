@@ -574,7 +574,7 @@ class AudioCaptureService : Service() {
         val path = writePauseClip(pause.startMs, pause.endMs)
         val pt = nightMs(pause.startMs) / 1000.0
         NocturnePlugin.emitPause(pt, pause.durSec, pauseCount, path)
-        appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, pause.durSec)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
+        appendSessionEvent("{\"e\":\"pause\",\"t\":${"%.1f".format(Locale.US, pt)},\"dur\":${"%.1f".format(Locale.US, pause.durSec)},\"rec\":${"%.1f".format(Locale.US, pause.recoveryRatio)},\"count\":$pauseCount,\"clip\":${jsonStr(path)}}")
     }
 
     /**

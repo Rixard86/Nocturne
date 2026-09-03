@@ -163,3 +163,26 @@ The measurement that justified it came from a night with roughly 50 minutes of r
 start: 770 confirmed snores fell to 377, while a clean night fell only 998 -> 975. That 377
 independently matches the count from discarding the radio window by wall-clock time instead,
 which is two unrelated methods agreeing.
+
+## Pause baselines changed again 2026-09-03 (recovery breath required)
+
+A pause is now only reported when the sound resuming after the gap is at least
+RECOVERY_MIN_RATIO (3.0x) louder than the gap's own level. An obstructive event ends with a
+gasp; a gap that merely fades out is more likely breathing that was never audible.
+
+| fixture | pauses before | after |
+|---|---|---|
+| night-2026-09-02 (audio) | 10 | **2** - at 4482s and 4495s, both human-confirmed |
+| night-2026-09-03 (audio) | 4 | **1** - at 16625s, the only one with a verifiable arc |
+| quiet-room-2026-08-30 | 1 | **1** - still a false positive, see below |
+
+Measured across both nights, the three human-verified pauses recovered by 15.1x, 12.3x and
+5.4x while every other candidate managed 2.1x or less. Nothing falls in between.
+
+**The quiet-room false positive survives, and no event-level gate will remove it.** It has
+the strongest drop AND the strongest recovery of anything measured - 32.0 dB and 30.9 dB,
+beating the confirmed pauses. That is not a bug in the thresholds: in 171 seconds of a
+near-silent room, an isolated sound followed by silence followed by another sound IS
+acoustically a textbook apnea. What distinguishes a real one is context the event does not
+carry - a real night has continuous breathing around it. Left in place deliberately, as the
+standing reminder that these gates cannot tell "stopped breathing" from "never audible".

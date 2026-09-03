@@ -89,6 +89,7 @@ object RecordingReport {
             println(String.format(Locale.US, "      %-20s %6d", "no snore before", r.noSnore))
             println(String.format(Locale.US, "      %-20s %6d", "snore too far back", r.snoreTooFar))
             println(String.format(Locale.US, "      %-20s %6d", "snore too short", r.snoreTooShort))
+            println(String.format(Locale.US, "      %-20s %6d", "no recovery breath", r.noRecovery))
         }
         println()
         println("  verdicts")
