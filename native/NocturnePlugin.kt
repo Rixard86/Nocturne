@@ -272,6 +272,41 @@ class NocturnePlugin : Plugin() {
         }
     }
 
+    /**
+     * What microphones this phone has, and where they physically sit.
+     *
+     * A phone lying on a nightstand is nothing like a phone held to a face, and the capture
+     * source picks a mic for the second case. Knowing which ones exist, and where they point,
+     * is the first step in asking whether the right one is being used.
+     */
+    @PluginMethod
+    fun microphones(call: PluginCall) {
+        val out = JSObject()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            call.resolve(out.put("supported", false)); return
+        }
+        try {
+            val manager = context.getSystemService(android.content.Context.AUDIO_SERVICE)
+                as android.media.AudioManager
+            val list = com.getcapacitor.JSArray()
+            for (mic in manager.microphones) {
+                list.put(JSObject()
+                    .put("id", mic.id)
+                    .put("address", mic.address)
+                    .put("location", mic.location)
+                    .put("directionality", mic.directionality)
+                    .put("x", mic.position.x).put("y", mic.position.y).put("z", mic.position.z)
+                    .put("sensitivity", mic.sensitivity)
+                    .put("maxSpl", mic.maxSpl))
+            }
+            out.put("supported", true).put("microphones", list)
+            out.put("routed", AudioCaptureService.routedMic)
+        } catch (e: Exception) {
+            out.put("supported", false).put("error", e.message ?: "failed")
+        }
+        call.resolve(out)
+    }
+
     @PluginMethod
     fun isIgnoringBatteryOptimizations(call: PluginCall) {
         try {

@@ -57,6 +57,10 @@ class AudioCaptureService : Service() {
         const val SESSION_META_NAME = "session.json"
         @Volatile var running = false
         @Volatile var sensitivityRatio = 1.4   // auto wake-gate; updated live from the plugin
+
+        // Which physical mic the chosen source actually routed to, for diagnostics.
+        @Volatile var routedMic = ""
+            private set
     }
 
     private var thread: Thread? = null
@@ -375,6 +379,10 @@ class AudioCaptureService : Service() {
         rates.noiseSuppressor = disableEffect("ns", recorder.audioSessionId)
 
         recorder.startRecording()
+        routedMic = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            recorder.routedDevice?.let { "${it.type}:${it.productName}" } ?: "unknown"
+        } else "unknown"
+
         appendSessionEvent(EpisodeLog.config(sourceName, rates))
         NocturnePlugin.emitState("calibrating", 0.0, 0, 0, 0.0)
 
