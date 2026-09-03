@@ -80,9 +80,31 @@ function drawTimelineReport(){
     let near=null,best=1e9;
     n.events.forEach(ev=>{const d=Math.abs(ev.t-t);if(d<best){best=d;near=ev;}});
     let pNear=null; n.pauseList.forEach(p=>{if(Math.abs(p.t-t)<120)pNear=p;});
-    if(pNear){ loadPlayer({t:pNear.t,dur:pNear.dur,kind:'pause',clip:pNear.clip||''}); }
-    else if(near){ loadPlayer(near); }
+    // Set the playlist to whatever kind was tapped, so Prev/Next walk that series. The
+    // playlist otherwise only ever held the six loudest snores, so tapping anything else on
+    // the timeline left the transport unable to find the current event and it hid its own
+    // nav - which looked like the Next button vanishing at random.
+    if(pNear){ openFromTimeline(pauseSeries(n), p => p.t===pNear.t); }
+    else if(near){ openFromTimeline(snoreSeries(n), e => e.t===near.t); }
   };
+}
+
+/** Pauses as playable events. They are stored without ids, and the transport needs one. */
+function pauseSeries(night){
+  return (night.pauseList||[]).map((p,i)=>({ id:'pause'+i, t:p.t, dur:p.dur, kind:'pause', clip:p.clip||'', lvl:0 }));
+}
+
+/** Every snore with audio, in time order - not just the six the report lists. */
+function snoreSeries(night){
+  return (night.events||[]).filter(e=>e.clip).sort((a,b)=>a.t-b.t);
+}
+
+/** Make `series` the transport's playlist and open the entry that `match` picks out. */
+function openFromTimeline(series, match){
+  if(!series.length) return;
+  const idx = Math.max(0, series.findIndex(match));
+  S._playlist = series;
+  loadPlayer(series[idx]);
 }
 
 /* live timeline (small, during recording — drawn into halo area? we keep report canvas only) */
