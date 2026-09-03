@@ -85,6 +85,8 @@ function renderReport(){
           </div>
           <span class="ptag" id="ppTag" style="display:none"></span>
         </div>
+        <canvas class="parc" id="ppArc" style="display:none"></canvas>
+        <div class="pshape" id="ppShape"></div>
         <div class="player-transport" id="ppTransport" style="display:none">
           <span class="ptime" id="ppCur">0:00</span>
           <div class="pseek" id="ppSeek"><div class="pseek-fill" id="ppFill"></div><div class="pseek-knob" id="ppKnob"></div></div>

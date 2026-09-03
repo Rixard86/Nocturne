@@ -1,4 +1,5 @@
 import { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext, prepareClip, playableClip } from './audio-enhance.js';
+import { showPauseArc, redrawPauseArc } from './pause-arc.js';
 import { drawTimelineReport } from './charts.js';
 import { S } from './state.js';
 import { $, toast } from './ui.js';
@@ -22,6 +23,7 @@ function loadPlayer(ev){
   else {tag.style.display='none';}
   // reveal transport + nav
   $('ppTransport').style.display='flex';
+  showPauseArc(ev, ev.clip ? clipSource(nativeSrc(ev)) : '');
   // The enhancer only applies to real recorded audio, not the synthesized fallback.
   const enhWrap=$('ppEnhWrap');
   if(enhWrap) enhWrap.style.display = ev.clip ? 'flex' : 'none';
@@ -57,6 +59,11 @@ function setSeek(frac){
 // Clarify governs BOTH stages of cleanup, not just the filter chain. The room removal runs
 // at clip load and swaps in a processed blob, so leaving the source alone meant "off" still
 // played denoised audio with the biquads bypassed - never the recording as captured.
+function nativeSrc(ev){
+  const C=window.Capacitor;
+  return (C && C.convertFileSrc)? C.convertFileSrc(ev.clip) : ev.clip;
+}
+
 function clipSource(src){
   return isEnhanced() ? playableClip(src) : src;
 }
@@ -129,8 +136,12 @@ function startPlayback(ev){
 }
 
 function wireAudioEl(a){
+  a.addEventListener('loadedmetadata',()=>{
+    if(S._curEv && S._curEv.kind==='pause') redrawPauseArc(S._curEv);
+  });
   a.addEventListener('timeupdate',()=>{
     if(!a.duration||!isFinite(a.duration)) return;
+    if(S._curEv && S._curEv.kind==='pause') redrawPauseArc(S._curEv);
     setSeek(a.currentTime/a.duration);
     $('ppCur').textContent=fmtClock(a.currentTime);
     $('ppDur').textContent=fmtClock(a.duration);

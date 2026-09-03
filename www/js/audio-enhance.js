@@ -214,3 +214,38 @@ export function prepareClip(url) {
 export function playableClip(url) {
   return prepared.get(url) || url;
 }
+
+/* ---------- clip envelope, for drawing a pause as a shape ---------- */
+
+// A pause is evidence of absence, and absence is far easier to SEE than to hear: silence
+// bracketed by two bursts reads instantly as a shape, where listening to it means sitting
+// through the gap in real time.
+const ENVELOPE_BUCKETS = 240;
+const envelopes = new Map();
+
+function envelopeOf(samples) {
+  const out = new Float32Array(ENVELOPE_BUCKETS);
+  const per = Math.max(1, Math.floor(samples.length / ENVELOPE_BUCKETS));
+  for (let i = 0; i < ENVELOPE_BUCKETS; i++) {
+    let peak = 0;
+    const from = i * per, to = Math.min(samples.length, from + per);
+    for (let j = from; j < to; j++) { const v = Math.abs(samples[j]); if (v > peak) peak = v; }
+    out[i] = peak;
+  }
+  return out;
+}
+
+/** Peak-per-bucket envelope of a clip. Resolves null when it cannot be decoded. */
+export function clipEnvelope(url) {
+  if (!url) return Promise.resolve(null);
+  if (envelopes.has(url)) return envelopes.get(url);
+  const ctx = audioContext();
+  if (!ctx || !ctx.decodeAudioData) return Promise.resolve(null);
+  const pending = fetch(url)
+    .then(response => response.arrayBuffer())
+    .then(bytes => ctx.decodeAudioData(bytes))
+    .then(decoded => envelopeOf(decoded.getChannelData(0)))
+    .catch(() => null);
+  envelopes.set(url, pending);
+  return pending;
+}
