@@ -53,6 +53,18 @@ const MAINS_BANDWIDTH_HZ = 3;
 // Clips arrive around -56 dBFS RMS. These bring them to about -30 dBFS with peaks near
 // -14 dBFS — a ~25 dB lift measured across three real clips with zero samples clipped.
 const PRE_GAIN = 26;
+
+// The bypass needs lifting too. These recordings sit around -65 dBFS, so routing the source
+// straight to the output made "original" silent rather than unfiltered - the comparison the
+// toggle exists for was impossible to hear.
+//
+// It cannot be a fixed gain. Measured across real clips the peaks span 0.0040 to 0.0512, so
+// any single value either clips the loudest or leaves the quietest inaudible. The processed
+// path solves this with a compressor; the bypass deliberately has none, so instead each clip
+// is lifted by its own peak. That changes level only - no filtering, which is the point.
+const BYPASS_TARGET_PEAK = 0.7;
+const BYPASS_GAIN_MAX = 400;
+const BYPASS_GAIN_DEFAULT = 20;   // until a clip's peak is known: safe for the loudest seen
 const MAKEUP_GAIN = 2.5;
 
 let context = null;
@@ -107,6 +119,10 @@ function buildGraph(source, ctx) {
   const makeup = ctx.createGain();
   makeup.gain.value = MAKEUP_GAIN;
 
+  const bypassGain = ctx.createGain();
+  bypassGain.gain.value = BYPASS_GAIN_DEFAULT;
+  source.connect(bypassGain);
+
   source.connect(rumbleCut);
   rumbleCut.connect(hissCut);
   // chain the mains notches between the hiss cut and the gain stage
@@ -116,7 +132,7 @@ function buildGraph(source, ctx) {
   preGain.connect(compressor);
   compressor.connect(makeup);
 
-  return { makeup, bypass: source };
+  return { makeup, bypass: bypassGain };
 }
 
 /**
@@ -222,6 +238,7 @@ export function playableClip(url) {
 // through the gap in real time.
 const ENVELOPE_BUCKETS = 240;
 const envelopes = new Map();
+const peaks = new Map();
 
 function envelopeOf(samples) {
   const out = new Float32Array(ENVELOPE_BUCKETS);
@@ -244,8 +261,26 @@ export function clipEnvelope(url) {
   const pending = fetch(url)
     .then(response => response.arrayBuffer())
     .then(bytes => ctx.decodeAudioData(bytes))
-    .then(decoded => envelopeOf(decoded.getChannelData(0)))
+    .then(decoded => {
+      const env = envelopeOf(decoded.getChannelData(0));
+      let peak = 0;
+      for (const v of env) if (v > peak) peak = v;
+      peaks.set(url, peak);
+      return env;
+    })
     .catch(() => null);
   envelopes.set(url, pending);
   return pending;
+}
+
+/**
+ * Level the unfiltered path for one clip, so "original" is audible without clipping. Call it
+ * with the RAW url; the peak comes from the same decode the envelope uses.
+ */
+export function tuneBypass(url) {
+  if (!graph || !graph.bypass || !graph.bypass.gain) return;
+  const peak = peaks.get(url);
+  graph.bypass.gain.value = peak > 0
+    ? Math.min(BYPASS_GAIN_MAX, BYPASS_TARGET_PEAK / peak)
+    : BYPASS_GAIN_DEFAULT;
 }

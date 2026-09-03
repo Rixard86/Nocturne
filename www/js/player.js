@@ -1,4 +1,4 @@
-import { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext, prepareClip, playableClip } from './audio-enhance.js';
+import { attachEnhancer, setEnhanced, isEnhanced, resumeAudio, audioContext, prepareClip, playableClip, clipEnvelope, tuneBypass } from './audio-enhance.js';
 import { showPauseArc, redrawPauseArc } from './pause-arc.js';
 import { eventLoudness } from './loudness.js';
 import { drawTimelineReport } from './charts.js';
@@ -31,7 +31,12 @@ function loadPlayer(ev){
   // Start removing the room from this clip now, while the user is still looking at it, so
   // playback can begin straight from their tap without waiting on the analysis.
   if(ev.clip){
-    try{ const C=window.Capacitor; prepareClip((C&&C.convertFileSrc)? C.convertFileSrc(ev.clip) : ev.clip); }catch(e){}
+    try{
+      const raw = nativeSrc(ev);
+      prepareClip(raw);
+      // decode the RAW clip too, so the unfiltered path can be levelled to this clip's peak
+      clipEnvelope(raw).then(()=>{ if(S._curEv===ev) tuneBypass(raw); });
+    }catch(e){}
   }
   const list=playerList();
   const idx=list.findIndex(x=>x.id===ev.id);
