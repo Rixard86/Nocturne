@@ -2,6 +2,7 @@ import { drawHypnogram, drawTimelineReport } from './charts.js';
 import { wireExport } from './export.js';
 import { switchView } from './navigation.js';
 import { loadPlayer, startPlayback, stopPlayback, wirePlayer } from './player.js';
+import { eventLoudness, loudnessRank, nightPeakDb } from './loudness.js';
 import { S } from './state.js';
 import { $, band, fmtMin } from './ui.js';
 
@@ -26,6 +27,15 @@ function openNight(night){
   switchView('report');
   requestAnimationFrame(()=>{ if($('tl'))drawTimelineReport(); if($('hypno'))drawHypnogram(); });
 }
+// "Peak 100" says nothing once the scale is normalised - the loudest event is always 100.
+// The dB over the room floor is the figure that means something and compares across nights.
+function peakNote(n){
+  const db = nightPeakDb(n);
+  return db != null
+    ? `Peak ${db.toFixed(0)} dB over the room floor`
+    : `Peak ${n.peakLvl} · relative scale 0–100`;
+}
+
 function renderReport(){
   const n=S.current;
   if(!n){ $('reportBody').innerHTML=emptyState('No night analyzed yet','Record a night or load a sample to see your report.'); return; }
@@ -59,7 +69,7 @@ function renderReport(){
       <div class="mcard">
         <div class="mv">${n.avgLvl}<small></small></div>
         <div class="ml">Avg loud level</div>
-        <div class="mnote">Peak ${n.peakLvl} · relative scale 0–100</div>
+        <div class="mnote">${peakNote(n)}</div>
       </div>
       <div class="mcard">
         <div class="mv">${n.stablePct}<small>%</small></div>
@@ -155,18 +165,21 @@ function emptyState(t,p){return `<div class="empty"><div class="e-ico">◐</div>
 /* ---------- event list ---------- */
 function renderEvents(){
   const n=S.current, el=$('eventList'); if(!el)return;
-  const top=[...n.events].sort((a,b)=>(b.lvl||0)-(a.lvl||0)).slice(0,6);
+  // ranked on the true ratio: the clamped level ties every loud event at 100, which made
+  // "the six loudest" an arbitrary pick among them
+  const top=[...n.events].sort((a,b)=>loudnessRank(b)-loudnessRank(a)).slice(0,6);
   // the playlist the transport walks through, kept in chronological order
   S._playlist=[...top].sort((a,b)=>a.t-b.t);
   if(!top.length){ el.innerHTML='<div style="color:var(--faint);font-size:13px;padding:10px 4px">No distinct snore events were detected. Quiet night.</div>'; return; }
-  const maxLvl=Math.max(...top.map(e=>e.lvl||0),1);
+  const maxLvl=Math.max(...top.map(e=>eventLoudness(e).level),1);
   el.innerHTML=top.map(e=>{
     const hh=Math.floor(e.t/3600), mm=Math.floor((e.t%3600)/60);
-    const col = (e.lvl||0)>65?'#F5B660':'linear-gradient(90deg,#38E1C6,#7C7CF0)';
+    const loud = eventLoudness(e);
+    const col = loud.level>65?'#F5B660':'linear-gradient(90deg,#38E1C6,#7C7CF0)';
     return `<div class="ev">
       <span class="et">${hh}h ${String(mm).padStart(2,'0')}m</span>
-      <span class="ebar"><div style="width:${((e.lvl||0)/maxLvl)*100}%;background:${col}"></div></span>
-      <span class="ev-v">lvl ${e.lvl||0} · ${e.dur.toFixed(1)}s</span>
+      <span class="ebar"><div style="width:${(loud.level/maxLvl)*100}%;background:${col}"></div></span>
+      <span class="ev-v">${loud.db!=null? loud.db.toFixed(0)+' dB' : 'lvl '+loud.level} · ${e.dur.toFixed(1)}s</span>
       <button class="play-s" data-ev="${e.id}">▶</button>
     </div>`;
   }).join('');
