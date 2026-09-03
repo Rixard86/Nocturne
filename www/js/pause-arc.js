@@ -102,7 +102,12 @@ function drawArc(ev, env){
 /** Show the arc for a pause, hide it for anything else. */
 export function showPauseArc(ev, url){
   const c = canvas(); if(!c) return;
-  if(!ev || ev.kind!=='pause' || !ev.clip){ c.style.display='none'; return; }
+  const shape = $('ppShape');
+  if(!ev || ev.kind!=='pause' || !ev.clip){
+    c.style.display='none';
+    if(shape) shape.textContent = '';   // or the previous pause's verdict sits under a snore
+    return;
+  }
   c.style.display='block';
   cached = null;
   drawArc(ev, null);
