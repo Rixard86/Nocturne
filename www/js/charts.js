@@ -116,7 +116,9 @@ const STAGE_Y={awake:0, rem:1, light:2, deep:3};
 function drawHypnogram(){
   const c=$('hypno'); if(!c)return;
   if(!c.clientWidth) return; // view hidden; redrawn on tab switch / resize
-  const n=S.current; const hyp=(n&&n.hypnogram)||[];
+  // the wearable's own staging wins when the night has it; the acoustic one is a proxy for
+  // exactly this and has no reason to be preferred once the real thing is present
+  const n=S.current; const hyp=(n&&(n.wearableHypnogram||n.hypnogram))||[];
   const ctx=c.getContext('2d'), r=window.devicePixelRatio||1;
   c.width=c.clientWidth*r; c.height=c.clientHeight*r; ctx.setTransform(r,0,0,r,0,0);
   const w=c.clientWidth,h=c.clientHeight;

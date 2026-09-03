@@ -3,6 +3,7 @@ import { wireExport } from './export.js';
 import { switchView } from './navigation.js';
 import { loadPlayer, startPlayback, stopPlayback, wirePlayer } from './player.js';
 import { eventLoudness, loudnessRank, nightPeakDb } from './loudness.js';
+import { wearableNight, stagesAsHypnogram, snoresByStage } from './health.js';
 import { S } from './state.js';
 import { $, band, fmtMin } from './ui.js';
 
@@ -34,6 +35,72 @@ function peakNote(n){
   return db != null
     ? `Peak ${db.toFixed(0)} dB over the room floor`
     : `Peak ${n.peakLvl} · relative scale 0–100`;
+}
+
+/* ---------- sleep staging: the watch's if there is one, otherwise the acoustic estimate ---------- */
+
+function stageBadge(n){
+  return n.wearable ? `from ${sourceName(n.wearable.source)}` : 'estimate';
+}
+
+function sourceName(pkg){
+  if(!pkg) return 'your watch';
+  if(pkg.indexOf('fitbit')>=0) return 'Fitbit';
+  if(pkg.indexOf('shealth')>=0 || pkg.indexOf('samsung')>=0) return 'Samsung Health';
+  return pkg.split('.').pop();
+}
+
+// CSS capitalize turns "rem" into "Rem"; it is an acronym.
+function stageLabel(stage){
+  return stage === 'rem' ? 'REM' : stage.charAt(0).toUpperCase() + stage.slice(1);
+}
+
+function stagePct(n, stage){
+  if(n.wearable){
+    const mins = n.wearable.session.stageMinutes || {};
+    const total = Object.keys(mins).reduce((a,k)=>a+mins[k],0) || 1;
+    return Math.round(((mins[stage]||0)/total)*100);
+  }
+  return n.stages ? (n.stages[stage]||0) : 0;
+}
+
+function stageNote(n){
+  return n.wearable
+    ? `Measured by ${sourceName(n.wearable.source)}, ${n.wearable.overlapMin} min overlapping this recording. Nocturne's own acoustic estimate is replaced when a wearable covered the night.`
+    : 'Estimated from sound and movement only — not a clinical sleep study. Real staging needs brain and body sensors.';
+}
+
+/** Snoring rate per stage - the one thing neither the phone nor the watch can say alone. */
+function byStageBlock(n){
+  const rows = n.wearableByStage || [];
+  if(!rows.length) return '';
+  const peak = Math.max(...rows.map(r=>r.perHour), 1);
+  return `<div class="bystage">
+    <div class="bystage-t">Snoring by stage</div>
+    ${rows.map(r=>`<div class="bs">
+      <span class="bs-l">${stageLabel(r.stage)}</span>
+      <span class="bs-bar"><div style="width:${(r.perHour/peak)*100}%"></div></span>
+      <span class="bs-v">${r.perHour.toFixed(0)}/h</span>
+    </div>`).join('')}
+  </div>`;
+}
+
+/**
+ * Ask the wearable about this night, once, then redraw. It cannot be done while rendering:
+ * the read crosses to Health Connect and back, and the report must not wait on it - a night
+ * with no watch should render immediately and unchanged.
+ */
+function loadWearableStaging(){
+  const n = S.current;
+  if(!n || n._wearableChecked || n.isDemo) return;
+  n._wearableChecked = true;
+  wearableNight(n).then(found => {
+    if(!found || S.current !== n) return;
+    n.wearable = found;
+    n.wearableHypnogram = stagesAsHypnogram(found.session, n);
+    n.wearableByStage = snoresByStage(found.session, n);
+    renderReport();
+  }).catch(()=>{});
 }
 
 function renderReport(){
@@ -114,16 +181,17 @@ function renderReport(){
       </div>
     </div>
 
-    <div class="sec-title"><span class="bar"></span>Sleep stages <span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace;font-weight:400;margin-left:6px">estimate</span></div>
+    <div class="sec-title"><span class="bar"></span>Sleep stages <span style="font-size:11px;color:var(--faint);font-family:'JetBrains Mono',monospace;font-weight:400;margin-left:6px">${stageBadge(n)}</span></div>
     <div class="stages-card">
       <canvas id="hypno"></canvas>
       <div class="stage-legend">
-        <div class="sg"><i style="background:var(--flag)"></i>Awake ${n.stages?n.stages.awake:0}%</div>
-        <div class="sg"><i style="background:#B98CF0"></i>REM ${n.stages?n.stages.rem:0}%</div>
-        <div class="sg"><i style="background:var(--sig-b)"></i>Light ${n.stages?n.stages.light:0}%</div>
-        <div class="sg"><i style="background:var(--sig-a)"></i>Deep ${n.stages?n.stages.deep:0}%</div>
+        <div class="sg"><i style="background:var(--flag)"></i>Awake ${stagePct(n,'awake')}%</div>
+        <div class="sg"><i style="background:#B98CF0"></i>REM ${stagePct(n,'rem')}%</div>
+        <div class="sg"><i style="background:var(--sig-b)"></i>Light ${stagePct(n,'light')}%</div>
+        <div class="sg"><i style="background:var(--sig-a)"></i>Deep ${stagePct(n,'deep')}%</div>
       </div>
-      <div style="font-size:11px;color:var(--faint);margin-top:10px;line-height:1.5">Estimated from sound and movement only — not a clinical sleep study. Real staging needs brain and body sensors.</div>
+      <div style="font-size:11px;color:var(--faint);margin-top:10px;line-height:1.5">${stageNote(n)}</div>
+      ${byStageBlock(n)}
     </div>
 
     <div class="sec-title"><span class="bar"></span>Sounds detected</div>
@@ -155,6 +223,7 @@ function renderReport(){
   `;
   drawTimelineReport();
   drawHypnogram();
+  loadWearableStaging();
   renderEvents();
   wirePlayer();
   wireExport();
