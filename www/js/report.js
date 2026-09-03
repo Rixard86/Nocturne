@@ -77,11 +77,51 @@ function byStageBlock(n){
   const peak = Math.max(...rows.map(r=>r.perHour), 1);
   return `<div class="bystage">
     <div class="bystage-t">Snoring by stage</div>
-    ${rows.map(r=>`<div class="bs">
+    ${rows.map(r=>`<div class="bs${r.stage==='awake'&&awakeIsSuspect(n)?' bs-suspect':''}">
       <span class="bs-l">${stageLabel(r.stage)}</span>
       <span class="bs-bar"><div style="width:${(r.perHour/peak)*100}%"></div></span>
       <span class="bs-v">${r.perHour.toFixed(0)}/h</span>
     </div>`).join('')}
+    ${awakeWarning(n)}
+  </div>`;
+}
+
+// Snoring needs the airway relaxation of sleep, so it cannot happen while awake. Anything
+// counted during a wakeful stretch is therefore a false positive by definition - which makes
+// this the one precision check the app can run on itself every night, with no labelling and
+// no ground truth beyond what the watch already reports.
+//
+// A short awake blip makes a wild rate from a single event, so a minimum span is required
+// before saying anything, and the rate has to be a real share of the sleeping rate rather
+// than merely non-zero.
+const AWAKE_MIN_MINUTES = 5;
+const AWAKE_SUSPECT_SHARE = 0.4;
+
+function awakeRow(n){
+  return (n.wearableByStage || []).find(r => r.stage === 'awake') || null;
+}
+
+function asleepRate(n){
+  const rows = (n.wearableByStage || []).filter(r => r.stage !== 'awake');
+  const minutes = rows.reduce((a, r) => a + r.minutes, 0);
+  const snores = rows.reduce((a, r) => a + r.snores, 0);
+  return minutes > 0 ? snores / (minutes / 60) : 0;
+}
+
+function awakeIsSuspect(n){
+  const awake = awakeRow(n);
+  if(!awake || awake.minutes < AWAKE_MIN_MINUTES || !awake.snores) return false;
+  return awake.perHour >= Math.max(asleepRate(n) * AWAKE_SUSPECT_SHARE, 1);
+}
+
+function awakeWarning(n){
+  if(!awakeIsSuspect(n)) return '';
+  const awake = awakeRow(n);
+  return `<div class="bs-warn">
+    <b>${awake.snores} of these were counted while ${sourceName(n.wearable.source)} says you were awake.</b>
+    Snoring needs the muscle relaxation of sleep, so those are almost certainly a different
+    sound — a radio or TV, someone else in the room, or simply moving about. Treat the night's
+    totals as an upper bound.
   </div>`;
 }
 

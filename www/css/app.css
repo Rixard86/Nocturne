@@ -161,6 +161,11 @@
   .bs-bar{flex:1;height:6px;border-radius:3px;background:var(--panel);overflow:hidden}
   .bs-bar div{height:100%;border-radius:3px;background:linear-gradient(90deg,#38E1C6,#7C7CF0)}
   .bs-v{flex:0 0 46px;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--txt)}
+  .bs-suspect .bs-l,.bs-suspect .bs-v{color:var(--flag)}
+  .bs-suspect .bs-bar div{background:linear-gradient(90deg,#F5B660,#E08A4B)}
+  .bs-warn{margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(245,182,96,.09);
+    border:1px solid rgba(245,182,96,.25);font-size:11px;line-height:1.55;color:var(--muted)}
+  .bs-warn b{color:var(--flag);font-weight:500}
   .player .pp{width:40px;height:40px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--sig-a),var(--sig-b));
     cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--bg);font-size:15px;transition:transform .12s}
   .player .pp:active{transform:scale(.92)}
