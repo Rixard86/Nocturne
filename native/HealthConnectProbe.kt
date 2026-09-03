@@ -46,6 +46,13 @@ object HealthConnectProbe {
     private const val DEFAULT_DAYS = 30L
     private const val MAX_SESSIONS_REPORTED = 20
 
+    // readRecords returns one page plus a token. Reading only the first page truncated in
+    // silence: two days of Fitbit heart rate came back as exactly 1000 records - the default
+    // page size - and nothing said so. The cap still bounds a probe that would otherwise pull
+    // a year of samples, but hitting it is now reported.
+    private const val PAGE_SIZE = 1000
+    private const val MAX_RECORDS = 20000
+
     /** A client bound to the window being surveyed, so helpers stay single-argument. */
     private class Scope(val client: HealthConnectClient, val since: Instant)
 
@@ -95,10 +102,23 @@ object HealthConnectProbe {
             JSObject().put("error", e.message ?: e.javaClass.simpleName)
         }
 
-    private suspend fun <T : Record> read(scope: Scope, type: KClass<T>): List<T> =
-        scope.client.readRecords(
-            ReadRecordsRequest(type, TimeRangeFilter.after(scope.since))
-        ).records
+    private suspend fun <T : Record> read(scope: Scope, type: KClass<T>): List<T> {
+        val all = ArrayList<T>()
+        var token: String? = null
+        do {
+            val page = scope.client.readRecords(
+                ReadRecordsRequest(
+                    recordType = type,
+                    timeRangeFilter = TimeRangeFilter.after(scope.since),
+                    pageSize = PAGE_SIZE,
+                    pageToken = token
+                )
+            )
+            all.addAll(page.records)
+            token = page.pageToken
+        } while (token != null && all.size < MAX_RECORDS)
+        return all
+    }
 
     private fun sources(records: List<Record>): JSArray =
         JSArray(records.map { it.metadata.dataOrigin.packageName }.distinct().toTypedArray())
@@ -158,6 +178,7 @@ object HealthConnectProbe {
         for (session in recent) sessions.put(describe(session))
         return JSObject()
             .put("count", records.size)
+            .put("truncated", records.size >= MAX_RECORDS)
             .put("sources", sources(records))
             .put("staged", records.count { it.stages.isNotEmpty() })
             .put("overlappingPairs", countOverlaps(records))
@@ -203,6 +224,9 @@ object HealthConnectProbe {
         val spans = records.map { measuredSpan(it) }
         return JSObject()
             .put("count", records.size)
+            // Hitting the cap means there was more to read. Saying so is the whole point:
+            // the previous silent truncation looked exactly like a complete answer.
+            .put("truncated", records.size >= MAX_RECORDS)
             .put("samples", samples)
             .put("sources", sources(records))
             .put("firstMeasured", spans.minOfOrNull { it.first }?.toString() ?: "")
