@@ -146,3 +146,20 @@ is an artefact of there being nothing to hear rather than of breathing stopping.
 standing reminder that the pause gates cannot distinguish "stopped breathing" from "was never
 audible in the first place" - the reason placement matters so much, and the reason a pause
 count from a night with a weak signal should not be trusted.
+
+## Verdict baselines changed 2026-09-03 (LOW_VS_MIDLOW 0.8 -> 2.5)
+
+Music spreads energy across the bands where snoring concentrates it in the low one, and at
+0.8 this constant sat below both so it separated nothing. Raising it changed these figures.
+Pause counts are unaffected.
+
+| fixture | confirmed before | after |
+|---|---|---|
+| night-2026-09-02-baseline.jsonl | 998 | **975** (verdicts reproduced 1286 -> 1265 / 1288) |
+| night-2026-08-30-baseline.jsonl | 116 | **116** (verdicts reproduced 1339 -> 1327 / 1355) |
+| quiet-room-2026-08-30 (both paths) | 1 / 0 | unchanged |
+
+The measurement that justified it came from a night with roughly 50 minutes of radio at the
+start: 770 confirmed snores fell to 377, while a clean night fell only 998 -> 975. That 377
+independently matches the count from discarding the radio window by wall-clock time instead,
+which is two unrelated methods agreeing.

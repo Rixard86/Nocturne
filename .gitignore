@@ -14,7 +14,11 @@ dist/
 Thumbs.db
 
 # Diagnostic captures pulled from the device
-night.jsonl
+# Pulled recordings, including nights renamed to keep more than one around. These are
+# hundreds of megabytes; a night worth keeping belongs in fixtures/ as a log, not here.
+night*.jsonl
+night*.wav
+night*.chunks
 prefs-backup.xml
 *.png
 !android-icons/**/*.png

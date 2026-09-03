@@ -30,7 +30,14 @@ object SnoreVerdict {
     private const val VOICED_WEAK = 0.20
 
     private const val LOW_ENERGY_MIN = 0.30
-    private const val LOW_VS_MIDLOW = 0.8
+    // Snoring puts its energy in the low band; music spreads it. Measured across two nights,
+    // the median low/midLow ratio is 5.03 for real snoring and 1.48 for a radio playing, and
+    // at 0.8 this constant sat below both - it was not separating anything. At 2.5 it removes
+    // 91% of the radio-period episodes while keeping 97% of real ones, which on a night with
+    // ~50 minutes of radio cut 770 confirmed snores to 377 while a clean night went 998 to
+    // 975. That 377 independently matches the count obtained by simply discarding the radio
+    // window by wall-clock time.
+    private const val LOW_VS_MIDLOW = 2.5
     private const val PEAK_200_MIN = 0.08
     private const val PEAK_1K_MIN = 0.03
 
